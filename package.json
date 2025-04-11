@@ -1,0 +1,40 @@
+{
+  "name": "@infisical/mcp",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "files": [
+    "dist",
+    "package.json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/infisical/infisical-mcp-server"
+  },
+  "author": "Infisical Inc, <daniel@infisical.com>",
+  "keywords": [
+    "infisical",
+    "open-source",
+    "sdk",
+    "typescript",
+    "mcp",
+    "mcp-server",
+    "secrets-management",
+    "secrets",
+    "secrets-manager"
+  ],
+  "description": "Official Infisical MCP Server",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "tsup src/index.ts --out-dir dist --format cjs --tsconfig tsconfig.json --no-splitting"
+  },
+  "dependencies": {
+    "@infisical/sdk": "^3.0.8",
+    "@modelcontextprotocol/sdk": "^1.9.0",
+    "typescript": "^5.8.3",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.14.0",
+    "tsup": "^8.4.0"
+  }
+}
