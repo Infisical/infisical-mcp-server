@@ -1,0 +1,51 @@
+---
+name: Release Infisical MCP Server
+run-name: Release Infisical MCP Server
+
+on:
+    push:
+        tags:
+            - "*.*.*" # version, e.g. 1.0.0
+
+jobs:
+    npm:
+        name: Publish NPM
+        runs-on: ubuntu-22.04
+        steps:
+            - name: Checkout repo
+              uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+            - name: Setup Node
+              uses: actions/setup-node@8f152de45cc393bb48ce5d89d36b731f54556e65 # v4.0.0
+              with:
+                  node-version: 20
+                  cache: "npm"
+                  cache-dependency-path: package-lock.json
+
+            - name: Install dependencies
+              run: npm install
+
+            - name: Set NPM version
+              run: npm version ${{ github.ref_name }} --allow-same-version --no-git-tag-version
+
+            - name: Build MCP Server
+              run: npm run build
+
+            - name: Setup NPM
+              run: |
+                  echo 'registry="https://registry.npmjs.org/"' > ./.npmrc
+                  echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ./.npmrc
+
+                  echo 'registry="https://registry.npmjs.org/"' > ~/.npmrc
+                  echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" >> ~/.npmrc
+              env:
+                  NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+            - name: Pack NPM
+              run: npm pack
+
+            - name: Publish NPM
+              run: npm publish --tarball=./infisical-mcp-${{github.ref_name}} --access public --registry=https://registry.npmjs.org/
+              env:
+                  NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+                  NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
