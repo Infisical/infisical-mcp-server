@@ -29,7 +29,7 @@ Add the following to your `claude_desktop_config.json`. See [here](https://model
       "command": "npx",
       "args": [
           "-y",
-          "@infisical/mcp",
+          "@infisical/mcp"
       ],
       "env": {
         "INFISICAL_HOST_URL": "https://<custom-host-url>.com", // Optional
