@@ -12,7 +12,7 @@ In order to use the MCP server, you must first set the environment variables req
 - `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET`: The Machine Identity universal auth client secret that will be used for authentication.
 - `INFISICAL_HOST_URL`: **Optionally** set a custom host URL. This is useful if you're self-hosting Infisical or you're on dedicated infrastructure. Defaults to `https://app.infisical.com`
 
-To run the Stripe MCP server using npx, use the following command:
+To run the Infisical MCP server using npx, use the following command:
 ```bash
 npx -y @infisical/mcp
 ```
