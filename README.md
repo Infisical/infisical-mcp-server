@@ -31,7 +31,7 @@ Add the following to your `claude_desktop_config.json`. See [here](https://model
       "env": {
         "INFISICAL_HOST_URL": "https://<custom-host-url>.com", // Optional
         "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID": "<machine-identity-universal-auth-client-id>",
-        "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID": "<machine-identity-universal-auth-client-secret"
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET": "<machine-identity-universal-auth-client-secret"
       }
     }
   }
