@@ -397,7 +397,7 @@ const createFolderSchema = {
 
 const listProjectsSchema = {
 	zod: z.object({
-		type: z.enum(["secret-manager", "cert-manager", "kms", "ssh", "all"]).default("all")
+		type: z.enum(["secret-manager", "cert-manager", "kms", "ssh", "all"])
 	}),
 	capability: {
 		name: AvailableTools.ListProjects,
