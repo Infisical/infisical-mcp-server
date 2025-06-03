@@ -2,6 +2,7 @@
 
 import { InfisicalSDK } from "@infisical/sdk";
 import fs from "fs";
+import axios from "axios";
 import path from "path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -62,7 +63,8 @@ enum AvailableTools {
 	CreateProject = "create-project",
 	CreateEnvironment = "create-environment",
 	CreateFolder = "create-folder",
-	InviteMembersToProject = "invite-members-to-project"
+	InviteMembersToProject = "invite-members-to-project",
+	ListProjects = "list-projects"
 }
 
 const createSecretSchema = {
@@ -393,6 +395,25 @@ const createFolderSchema = {
 	}
 };
 
+const listProjectsSchema = {
+	zod: z.object({
+		type: z.enum(["secret-manager", "cert-manager", "kms", "ssh", "all"])
+	}),
+	capability: {
+		name: AvailableTools.ListProjects,
+		description: "List all projects in Infisical that the machine identity has access to.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				type: {
+					type: "string",
+					description: "The type of projects to retrieve. If not specified, `all` projects will be retrieved."
+				}
+			}
+		}
+	}
+};
+
 const inviteMembersToProjectSchema = {
 	zod: z.object({
 		projectId: z.string(),
@@ -439,7 +460,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 			createProjectSchema.capability,
 			createEnvironmentSchema.capability,
 			createFolderSchema.capability,
-			inviteMembersToProjectSchema.capability
+			inviteMembersToProjectSchema.capability,
+			listProjectsSchema.capability
 		]
 	};
 });
@@ -653,6 +675,71 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
 					}
 				]
 			};
+		}
+
+		if (name === AvailableTools.ListProjects) {
+			const data = listProjectsSchema.zod.parse(args);
+			const accessToken = infisicalSdk.auth().getAccessToken();
+
+			try {
+				let hostUrl = env.INFISICAL_HOST_URL;
+				if (!hostUrl.endsWith("/api")) {
+					if (hostUrl.endsWith("/")) {
+						hostUrl = hostUrl.slice(0, -1);
+					}
+
+					hostUrl += "/api";
+				}
+
+				const res = await axios.get<{
+					workspaces: {
+						hasDeleteProtection: boolean;
+						id: string;
+						name: string;
+						orgId: string;
+						slug: string;
+						type: string;
+						environments: {
+							name: string;
+							slug: string;
+							id: string;
+						}[];
+					}[];
+				}>(`${hostUrl}/v1/workspace?type=${data.type}`, {
+					headers: {
+						Authorization: `Bearer ${accessToken}`
+					}
+				});
+
+				const projects = res.data.workspaces.map(workspace => ({
+					hasDeleteProtection: workspace.hasDeleteProtection,
+					id: workspace.id,
+					name: workspace.name,
+					orgId: workspace.orgId,
+					slug: workspace.slug,
+					type: workspace.type,
+					environments: workspace.environments.map(environment => ({ ...environment }))
+				}));
+
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Projects retrieved successfully: ${JSON.stringify(projects, null, 3)}`
+						}
+					]
+				};
+			} catch (err) {
+				console.error(err);
+				return {
+					content: [
+						{
+							type: "text",
+							text: `Error retrieving projects: ${(err as any).message}. Access token: ${accessToken}`
+						}
+					]
+				};
+			}
 		}
 
 		throw new Error(`Unrecognized tool name: ${name}`);

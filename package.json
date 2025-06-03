@@ -29,8 +29,9 @@
     "build": "tsup src/index.ts --out-dir dist --format cjs --tsconfig tsconfig.json --no-splitting"
   },
   "dependencies": {
-    "@infisical/sdk": "^3.0.8",
+    "@infisical/sdk": "4.0.1",
     "@modelcontextprotocol/sdk": "^1.9.0",
+    "axios": "^1.9.0",
     "typescript": "^5.8.3",
     "zod": "^3.24.2"
   },
