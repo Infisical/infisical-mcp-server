@@ -397,18 +397,17 @@ const createFolderSchema = {
 
 const listProjectsSchema = {
 	zod: z.object({
-		type: z.enum(["secret-manager", "cert-manager", "kms", "ssh"])
+		type: z.enum(["secret-manager", "cert-manager", "kms", "ssh", "all"]).default("all")
 	}),
 	capability: {
 		name: AvailableTools.ListProjects,
-		description: "List all projects in Infisical, that the machine identity has access to.",
+		description: "List all projects in Infisical that the machine identity has access to.",
 		inputSchema: {
 			type: "object",
 			properties: {
 				type: {
 					type: "string",
-					description:
-						"The type of project to list (optional). secret-manager is the most common project type, but it can be other types as well."
+					description: "The type of projects to retrieve. If not specified, `all` projects will be retrieved."
 				}
 			}
 		}
