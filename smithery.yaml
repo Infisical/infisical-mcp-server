@@ -1,0 +1,29 @@
+# Smithery configuration file: https://smithery.ai/docs/build/project-config
+
+startCommand:
+  type: stdio
+  configSchema:
+    # JSON Schema defining the configuration options for the MCP.
+    type: object
+    required:
+      - infisicalUniversalAuthClientId
+      - infisicalUniversalAuthClientSecret
+    properties:
+      infisicalUniversalAuthClientId:
+        type: string
+        description: Infisical Machine Identity universal auth client ID
+      infisicalUniversalAuthClientSecret:
+        type: string
+        description: Infisical Machine Identity universal auth client secret
+      infisicalHostUrl:
+        type: string
+        default: https://app.infisical.com
+        description: Custom Infisical host URL
+  commandFunction:
+    # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
+    |-
+    (config) => ({ command: 'node', args: ['dist/index.js'], env: { INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: config.infisicalUniversalAuthClientId, INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: config.infisicalUniversalAuthClientSecret, INFISICAL_HOST_URL: config.infisicalHostUrl } })
+  exampleConfig:
+    infisicalUniversalAuthClientId: YOUR_CLIENT_ID
+    infisicalUniversalAuthClientSecret: YOUR_CLIENT_SECRET
+    infisicalHostUrl: https://app.infisical.com
