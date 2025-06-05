@@ -735,7 +735,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
 					content: [
 						{
 							type: "text",
-							text: `Error retrieving projects: ${(err as any).message}. Access token: ${accessToken}`
+							text: `Error retrieving projects: ${(err as any).message}.`
 						}
 					]
 				};
