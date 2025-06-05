@@ -678,69 +678,75 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
 		}
 
 		if (name === AvailableTools.ListProjects) {
-			const data = listProjectsSchema.zod.parse(args);
-			const accessToken = infisicalSdk.auth().getAccessToken();
+      const data = listProjectsSchema.zod.parse(args);
+      const accessToken = infisicalSdk.auth().getAccessToken();
 
-			try {
-				let hostUrl = env.INFISICAL_HOST_URL;
-				if (!hostUrl.endsWith("/api")) {
-					if (hostUrl.endsWith("/")) {
-						hostUrl = hostUrl.slice(0, -1);
-					}
+      try {
+        let hostUrl = env.INFISICAL_HOST_URL;
+        if (!hostUrl.endsWith("/api")) {
+          if (hostUrl.endsWith("/")) {
+            hostUrl = hostUrl.slice(0, -1);
+          }
 
-					hostUrl += "/api";
-				}
+          hostUrl += "/api";
+        }
 
-				const res = await axios.get<{
-					workspaces: {
-						hasDeleteProtection: boolean;
-						id: string;
-						name: string;
-						orgId: string;
-						slug: string;
-						type: string;
-						environments: {
-							name: string;
-							slug: string;
-							id: string;
-						}[];
-					}[];
-				}>(`${hostUrl}/v1/workspace?type=${data.type}`, {
-					headers: {
-						Authorization: `Bearer ${accessToken}`
-					}
-				});
+        const res = await axios.get<{
+          workspaces: {
+            hasDeleteProtection: boolean;
+            id: string;
+            name: string;
+            orgId: string;
+            slug: string;
+            type: string;
+            environments: {
+              name: string;
+              slug: string;
+              id: string;
+            }[];
+          }[];
+        }>(`${hostUrl}/v1/workspace?type=${data.type}`, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        });
 
-				const projects = res.data.workspaces.map(workspace => ({
-					hasDeleteProtection: workspace.hasDeleteProtection,
-					id: workspace.id,
-					name: workspace.name,
-					orgId: workspace.orgId,
-					slug: workspace.slug,
-					type: workspace.type,
-					environments: workspace.environments.map(environment => ({ ...environment }))
-				}));
+        const projects = res.data.workspaces.map((workspace) => ({
+          hasDeleteProtection: workspace.hasDeleteProtection,
+          id: workspace.id,
+          name: workspace.name,
+          orgId: workspace.orgId,
+          slug: workspace.slug,
+          type: workspace.type,
+          environments: workspace.environments.map((environment) => ({
+            ...environment,
+          })),
+        }));
 
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Projects retrieved successfully: ${JSON.stringify(projects, null, 3)}`
-						}
-					]
-				};
-			} catch (err) {
-				console.error(err);
-				return {
-					content: [
-						{
-							type: "text",
-							text: `Error retrieving projects: ${(err as any).message}. Access token: ${accessToken}`
-						}
-					]
-				};
-			}
-		}
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Projects retrieved successfully: ${JSON.stringify(
+                projects,
+                null,
+                3
+              )}`,
+            },
+          ],
+        };
+      } catch (err) {
+        console.error(err);
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error retrieving projects: ${(err as any).message}`,
+            },
+          ],
+        };
+      }
+    }
 
 		throw new Error(`Unrecognized tool name: ${name}`);
 	} catch (err) {
