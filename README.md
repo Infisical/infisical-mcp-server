@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/infisical-infisical-mcp-server-badge.png)](https://mseep.ai/app/infisical-infisical-mcp-server)
+
 # Infisical Model Context Protocol
 
 The Infisical [Model Context Protocol](https://modelcontextprotocol.com/) server allows you to integrate with Infisical APIs through function calling. This protocol supports various tools to interact with Infisical.
