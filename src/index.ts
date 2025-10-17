@@ -397,7 +397,7 @@ const createFolderSchema = {
 
 const listProjectsSchema = {
 	zod: z.object({
-		type: z.enum(["secret-manager", "cert-manager", "kms", "ssh", "all"])
+		type: z.enum(["secret-manager", "cert-manager", "kms", "ssh", "all"]).default("all")
 	}),
 	capability: {
 		name: AvailableTools.ListProjects,
@@ -691,6 +691,11 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
 					hostUrl += "/api";
 				}
 
+				let url = `${hostUrl}/v1/workspace`;
+				if (data.type !== "all") {
+					url += `?type=${data.type}`;
+				}
+
 				const res = await axios.get<{
 					workspaces: {
 						hasDeleteProtection: boolean;
@@ -705,7 +710,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
 							id: string;
 						}[];
 					}[];
-				}>(`${hostUrl}/v1/workspace?type=${data.type}`, {
+				}>(url, {
 					headers: {
 						Authorization: `Bearer ${accessToken}`
 					}
