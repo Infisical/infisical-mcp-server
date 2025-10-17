@@ -1,8 +1,18 @@
 # Infisical Model Context Protocol
 
+[![smithery badge](https://smithery.ai/badge/@Infisical/infisical-mcp-server)](https://smithery.ai/server/@Infisical/infisical-mcp-server)
+
 The Infisical [Model Context Protocol](https://modelcontextprotocol.com/) server allows you to integrate with Infisical APIs through function calling. This protocol supports various tools to interact with Infisical.
 
 ## Setup
+
+### Installing via Smithery
+
+To install Infisical Secrets Management Server for Claude Desktop automatically via [Smithery](https://smithery.ai/server/@Infisical/infisical-mcp-server):
+
+```bash
+npx -y @smithery/cli install @Infisical/infisical-mcp-server --client claude
+```
 
 ### Environment variables
 
