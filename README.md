@@ -2,6 +2,10 @@
 
 The Infisical [Model Context Protocol](https://modelcontextprotocol.com/) server allows you to integrate with Infisical APIs through function calling. This protocol supports various tools to interact with Infisical.
 
+<a href="https://glama.ai/mcp/servers/@Infisical/infisical-mcp-server">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/@Infisical/infisical-mcp-server/badge" alt="Infisical Server MCP server" />
+</a>
+
 ## Setup
 
 ### Environment variables
