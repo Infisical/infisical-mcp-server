@@ -1,0 +1,29 @@
+services:
+  # HTTP MCP Server with streaming support
+  infisical-mcp-http:
+    build: .
+    ports:
+      - "3333:3333"
+    environment:
+      - PORT=3333
+      - HOST=0.0.0.0
+      - INFISICAL_UNIVERSAL_AUTH_CLIENT_ID=${INFISICAL_UNIVERSAL_AUTH_CLIENT_ID}
+      - INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET=${INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET}
+      - INFISICAL_HOST_URL=${INFISICAL_HOST_URL}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3333/', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Stdio MCP Server (traditional mode)
+  infisical-mcp-stdio:
+    build: .
+    entrypoint: ["node", "dist/index.js"]
+    environment:
+      - INFISICAL_UNIVERSAL_AUTH_CLIENT_ID=${INFISICAL_UNIVERSAL_AUTH_CLIENT_ID}
+      - INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET=${INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET}
+      - INFISICAL_HOST_URL=${INFISICAL_HOST_URL}
+    restart: unless-stopped

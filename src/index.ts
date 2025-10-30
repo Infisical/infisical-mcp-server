@@ -16,7 +16,7 @@ const getEnvironmentVariables = () => {
 		.object({
 			INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: z.string().trim().min(1),
 			INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: z.string().trim().min(1),
-			INFISICAL_HOST_URL: z.string().default("https://app.infisical.com")
+			INFISICAL_HOST_URL: z.string()
 		})
 		.parse(process.env);
 
