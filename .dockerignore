@@ -1,0 +1,30 @@
+# Node modules
+node_modules
+npm-debug.log*
+
+# Build artifacts (dist will be copied from builder stage)
+dist
+
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+LICENSE
+
+# CI/CD
+.github
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# IDE
+.vscode
+.idea
+
+# OS
+.DS_Store
+Thumbs.db
