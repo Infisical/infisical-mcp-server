@@ -1,6 +1,6 @@
 # Infisical Model Context Protocol
 
-The Infisical [Model Context Protocol](https://modelcontextprotocol.com/) server allows you to integrate with Infisical APIs through function calling. This protocol supports various tools to interact with Infisical.
+The Infisical [Model Context Protocol](https://modelcontextprotocol.io/) server allows you to integrate with Infisical APIs through function calling. This protocol supports various tools to interact with Infisical.
 
 ## Setup
 
