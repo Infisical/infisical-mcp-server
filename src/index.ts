@@ -397,7 +397,7 @@ const createFolderSchema = {
 
 const listProjectsSchema = {
 	zod: z.object({
-		type: z.enum(["secret-manager", "cert-manager", "kms", "ssh", "all"])
+		type: z.enum(["secret-manager", "cert-manager", "kms", "ssh"]).optional()
 	}),
 	capability: {
 		name: AvailableTools.ListProjects,
@@ -407,7 +407,7 @@ const listProjectsSchema = {
 			properties: {
 				type: {
 					type: "string",
-					description: "The type of projects to retrieve. If not specified, `all` projects will be retrieved."
+					description: "The type of projects to retrieve (e.g. 'secret-manager', 'cert-manager', 'kms', 'ssh'). If not specified, all projects will be retrieved."
 				}
 			}
 		}
@@ -705,7 +705,7 @@ server.setRequestHandler(CallToolRequestSchema, async req => {
 							id: string;
 						}[];
 					}[];
-				}>(`${hostUrl}/v1/workspace?type=${data.type}`, {
+				}>(`${hostUrl}/v1/workspace${data.type ? `?type=${data.type}` : ""}`, {
 					headers: {
 						Authorization: `Bearer ${accessToken}`
 					}
