@@ -8,9 +8,11 @@ The Infisical [Model Context Protocol](https://modelcontextprotocol.io/) server 
 
 In order to use the MCP server, you must first set the environment variables required for authentication.
 
-- `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID`: The Machine Identity universal auth client ID that will be used for authentication
-- `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET`: The Machine Identity universal auth client secret that will be used for authentication.
-- `INFISICAL_HOST_URL`: **Optionally** set a custom host URL. This is useful if you're self-hosting Infisical or you're on dedicated infrastructure. Defaults to `https://app.infisical.com`
+- `INFISICAL_AUTH_METHOD`: The authentication method to use. Supported values are `universal-auth` and `access-token`. Defaults to `universal-auth`.
+- `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID`: The Machine Identity universal auth client ID. Required when `INFISICAL_AUTH_METHOD` is `universal-auth`.
+- `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET`: The Machine Identity universal auth client secret. Required when `INFISICAL_AUTH_METHOD` is `universal-auth`.
+- `INFISICAL_TOKEN`: An access token for authentication. This can be both a personal access token or a machine identity access token. Required when `INFISICAL_AUTH_METHOD` is `access-token`.
+- `INFISICAL_HOST_URL`: **Optionally** set a custom host URL. This is useful if you're self-hosting Infisical or you're on dedicated infrastructure. Defaults to `https://app.infisical.com`.
 
 To run the Infisical MCP server using npx, use the following command:
 
@@ -22,6 +24,8 @@ npx -y @infisical/mcp
 
 Add the following to your `claude_desktop_config.json`. See [here](https://modelcontextprotocol.io/quickstart/user) for more details.
 
+#### Universal Auth (default)
+
 ```json
 {
   "mcpServers": {
@@ -29,9 +33,27 @@ Add the following to your `claude_desktop_config.json`. See [here](https://model
       "command": "npx",
       "args": ["-y", "@infisical/mcp"],
       "env": {
-        "INFISICAL_HOST_URL": "https://<custom-host-url>.com", // Optional
+        "INFISICAL_HOST_URL": "https://<custom-host-url>.com",
         "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID": "<machine-identity-universal-auth-client-id>",
-        "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET": "<machine-identity-universal-auth-client-secret"
+        "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET": "<machine-identity-universal-auth-client-secret>"
+      }
+    }
+  }
+}
+```
+
+#### Access Token
+
+```json
+{
+  "mcpServers": {
+    "infisical": {
+      "command": "npx",
+      "args": ["-y", "@infisical/mcp"],
+      "env": {
+        "INFISICAL_HOST_URL": "https://<custom-host-url>.com",
+        "INFISICAL_AUTH_METHOD": "access-token",
+        "INFISICAL_TOKEN": "<your-access-token>"
       }
     }
   }
@@ -51,6 +73,7 @@ Add the following to your `claude_desktop_config.json`. See [here](https://model
 | `create-environment`        | Create a new environment                |
 | `create-folder`             | Create a new folder                     |
 | `invite-members-to-project` | Invite one or more members to a project |
+| `list-projects`             | List all projects                       |
 
 ## Debugging the Server
 

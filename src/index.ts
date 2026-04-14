@@ -12,6 +12,11 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
+enum InfisicalAuthMethod {
+  UniversalAuth = "universal-auth",
+  TokenAuth = "access-token",
+}
+
 const packageJson = JSON.parse(
   fs.readFileSync(path.join(__dirname, "../package.json"), "utf-8"),
 ) as { version: string };
@@ -19,9 +24,52 @@ const packageJson = JSON.parse(
 const getEnvironmentVariables = () => {
   const envSchema = z
     .object({
-      INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: z.string().trim().min(1),
-      INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: z.string().trim().min(1),
+      INFISICAL_AUTH_METHOD: z
+        .nativeEnum(InfisicalAuthMethod)
+        .default(InfisicalAuthMethod.UniversalAuth),
+      INFISICAL_TOKEN: z.string().trim().min(1).optional(),
+      INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: z.string().trim().min(1).optional(),
+      INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: z
+        .string()
+        .trim()
+        .min(1)
+        .optional(),
       INFISICAL_HOST_URL: z.string().default("https://app.infisical.com"),
+    })
+    // validate the env vars on startup to avoid runtime errors
+    .superRefine((data, ctx) => {
+      const missingClientIdOrClientSecret =
+        !data.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID ||
+        !data.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET;
+
+      const missingToken = !data.INFISICAL_TOKEN;
+
+      switch (data.INFISICAL_AUTH_METHOD) {
+        case InfisicalAuthMethod.UniversalAuth:
+          if (missingClientIdOrClientSecret) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                "Authentication method is set to universal auth, but INFISICAL_UNIVERSAL_AUTH_CLIENT_ID or INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET is not set",
+            });
+          }
+          break;
+        case InfisicalAuthMethod.TokenAuth:
+          if (missingToken) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                "Authentication method is set to token auth, but INFISICAL_TOKEN is not set",
+            });
+          }
+          break;
+        default:
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Unsupported authentication method: ${data.INFISICAL_AUTH_METHOD}`,
+          });
+          break;
+      }
     })
     .parse(process.env);
 
@@ -39,10 +87,21 @@ const handleAuthentication = async () => {
     return;
   }
 
-  await infisicalSdk.auth().universalAuth.login({
-    clientId: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID,
-    clientSecret: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET,
-  });
+  switch (env.INFISICAL_AUTH_METHOD) {
+    case InfisicalAuthMethod.UniversalAuth:
+      await infisicalSdk.auth().universalAuth.login({
+        clientId: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID!,
+        clientSecret: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET!,
+      });
+      break;
+    case InfisicalAuthMethod.TokenAuth:
+      infisicalSdk.auth().accessToken(env.INFISICAL_TOKEN!);
+      break;
+    default:
+      throw new Error(
+        `Unsupported authentication method: ${env.INFISICAL_AUTH_METHOD}`,
+      );
+  }
 
   isAuthenticated = true;
 };
@@ -415,12 +474,14 @@ const createFolderSchema = {
 
 const listProjectsSchema = {
   zod: z.object({
-    type: z.enum(["secret-manager", "cert-manager", "kms", "ssh", "all"]),
+    type: z
+      .enum(["secret-manager", "cert-manager", "kms", "ssh", "all"])
+      .default("all"),
   }),
   capability: {
     name: AvailableTools.ListProjects,
     description:
-      "List all projects in Infisical that the machine identity has access to.",
+      "List all projects in Infisical that the machine identity has access to. If the user asks to list all projects, use the `all` type parameter.",
     inputSchema: {
       type: "object",
       properties: {
