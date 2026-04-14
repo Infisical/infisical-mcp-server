@@ -24,7 +24,7 @@ jobs:
               with:
                 node-version: '24.14.0'
                 cache: "npm"
-                cache-dependency-path: ./npm/package-lock.json
+                cache-dependency-path: package-lock.json
                 registry-url: "https://registry.npmjs.org"
 
             - name: Install dependencies
