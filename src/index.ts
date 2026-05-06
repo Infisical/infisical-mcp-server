@@ -528,7 +528,7 @@ const inviteMembersToProjectSchema = {
           type: "array",
           items: { type: "string" },
           description:
-            "The role slugs of the members to invite. If not provided, the default role 'member' will be used. Ask the user to confirm the role they want to use if not explicitly specified.
+            "The role slugs of the members to invite. If not provided, the default role 'member' will be used. Ask the user to confirm the role they want to use if not explicitly specified."
         },
       },
       required: ["projectId"],
