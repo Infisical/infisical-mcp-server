@@ -514,18 +514,21 @@ const inviteMembersToProjectSchema = {
         },
         emails: {
           type: "array",
+          items: { type: "string" },
           description:
             "The emails of the members to invite. Either usernames or emails must be provided.",
         },
         usernames: {
           type: "array",
+          items: { type: "string" },
           description:
             "The usernames of the members to invite. Either usernames or emails must be provided.",
         },
         roleSlugs: {
           type: "array",
+          items: { type: "string" },
           description:
-            "The role slugs of the members to invite. If not provided, the default role 'member' will be used. Ask the user to confirm the role they want to use if not explicitly specified.",
+            "The role slugs of the members to invite. If not provided, the default role 'member' will be used. Ask the user to confirm the role they want to use if not explicitly specified.
         },
       },
       required: ["projectId"],
