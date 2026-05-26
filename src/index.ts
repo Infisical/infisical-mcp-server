@@ -495,6 +495,11 @@ const listProjectsSchema = {
   },
 };
 
+const stringArrayInputSchema = {
+  type: "array",
+  items: { type: "string" },
+};
+
 const inviteMembersToProjectSchema = {
   zod: z.object({
     projectId: z.string(),
@@ -513,17 +518,17 @@ const inviteMembersToProjectSchema = {
           description: "The ID of the project to invite members to (required)",
         },
         emails: {
-          type: "array",
+          ...stringArrayInputSchema,
           description:
             "The emails of the members to invite. Either usernames or emails must be provided.",
         },
         usernames: {
-          type: "array",
+          ...stringArrayInputSchema,
           description:
             "The usernames of the members to invite. Either usernames or emails must be provided.",
         },
         roleSlugs: {
-          type: "array",
+          ...stringArrayInputSchema,
           description:
             "The role slugs of the members to invite. If not provided, the default role 'member' will be used. Ask the user to confirm the role they want to use if not explicitly specified.",
         },
