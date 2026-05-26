@@ -264,11 +264,12 @@ const listSecretsSchema = {
     secretPath: z.string().default("/"),
     expandSecretReferences: z.boolean().default(true),
     includeImports: z.boolean().default(true),
+    includeValues: z.boolean().default(false),
   }),
   capability: {
     name: AvailableTools.ListSecrets,
     description:
-      "List all secrets in a given Infisical project and environment",
+      "List all secrets in a given Infisical project and environment. Secret values are MASKED by default (only keys returned) to prevent accidental leaks to LLM context / provider logs. Pass includeValues=true ONLY when the caller genuinely needs the values.",
     inputSchema: {
       type: "object",
       properties: {
@@ -293,6 +294,11 @@ const listSecretsSchema = {
         includeImports: {
           type: "boolean",
           description: "Whether to include secret imports (Defaults to true)",
+        },
+        includeValues: {
+          type: "boolean",
+          description:
+            "Whether to include secret values in the response (Defaults to false for safety). When false, response only contains secretKey for each secret. Set true ONLY when caller genuinely needs values - this exposes them to the LLM context.",
         },
       },
       required: ["projectId", "environmentSlug"],
@@ -631,17 +637,17 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         includeImports: data.includeImports,
       });
 
+      const mapSecret = (secret: { secretKey: string; secretValue: string }) =>
+        data.includeValues
+          ? { secretKey: secret.secretKey, secretValue: secret.secretValue }
+          : { secretKey: secret.secretKey };
+
       const response = {
-        secrets: secrets.secrets.map((secret) => ({
-          secretKey: secret.secretKey,
-          secretValue: secret.secretValue,
-        })),
+        valuesMasked: !data.includeValues,
+        secrets: secrets.secrets.map(mapSecret),
         ...(secrets.imports && {
           imports: secrets.imports?.map((imp) => {
-            const parsedImportSecrets = imp.secrets.map((secret) => ({
-              secretKey: secret.secretKey,
-              secretValue: secret.secretValue,
-            }));
+            const parsedImportSecrets = imp.secrets.map(mapSecret);
 
             return {
               ...imp,
