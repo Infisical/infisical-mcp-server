@@ -67,11 +67,12 @@ Add the following to your `claude_desktop_config.json`. See [here](https://model
 | `create-secret`             | Create a new secret                     |
 | `delete-secret`             | Delete a secret                         |
 | `update-secret`             | Update a secret                         |
-| `list-secrets`              | Lists all secrets                       |
+| `list-secrets`              | Lists all secrets (optionally recursive)|
 | `get-secret`                | Get a single secret                     |
 | `create-project`            | Create a new project                    |
 | `create-environment`        | Create a new environment                |
 | `create-folder`             | Create a new folder                     |
+| `list-folders`              | List folders (optionally recursive)     |
 | `invite-members-to-project` | Invite one or more members to a project |
 | `list-projects`             | List all projects                       |
 

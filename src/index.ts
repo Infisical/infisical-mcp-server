@@ -127,6 +127,7 @@ enum AvailableTools {
   CreateProject = "create-project",
   CreateEnvironment = "create-environment",
   CreateFolder = "create-folder",
+  ListFolders = "list-folders",
   InviteMembersToProject = "invite-members-to-project",
   ListProjects = "list-projects",
 }
@@ -264,6 +265,7 @@ const listSecretsSchema = {
     secretPath: z.string().default("/"),
     expandSecretReferences: z.boolean().default(true),
     includeImports: z.boolean().default(true),
+    recursive: z.boolean().default(false),
   }),
   capability: {
     name: AvailableTools.ListSecrets,
@@ -293,6 +295,11 @@ const listSecretsSchema = {
         includeImports: {
           type: "boolean",
           description: "Whether to include secret imports (Defaults to true)",
+        },
+        recursive: {
+          type: "boolean",
+          description:
+            "Whether to recursively list secrets from all sub-folders under the given path (Defaults to false)",
         },
       },
       required: ["projectId", "environmentSlug"],
@@ -472,6 +479,45 @@ const createFolderSchema = {
   },
 };
 
+const listFoldersSchema = {
+  zod: z.object({
+    projectId: z.string(),
+    environment: z.string(),
+    path: z.string().default("/"),
+    recursive: z.boolean().default(false),
+  }),
+  capability: {
+    name: AvailableTools.ListFolders,
+    description:
+      "List folders in a given Infisical project and environment, optionally recursing into sub-folders",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          description:
+            "The ID of the project to list the folders from (required)",
+        },
+        environment: {
+          type: "string",
+          description:
+            "The slug of the environment to list the folders from (required)",
+        },
+        path: {
+          type: "string",
+          description: "The path to list folders from (Defaults to /)",
+        },
+        recursive: {
+          type: "boolean",
+          description:
+            "Whether to recursively list all sub-folders under the given path (Defaults to false)",
+        },
+      },
+      required: ["projectId", "environment"],
+    },
+  },
+};
+
 const listProjectsSchema = {
   zod: z.object({
     type: z
@@ -543,6 +589,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       createProjectSchema.capability,
       createEnvironmentSchema.capability,
       createFolderSchema.capability,
+      listFoldersSchema.capability,
       inviteMembersToProjectSchema.capability,
       listProjectsSchema.capability,
     ],
@@ -629,6 +676,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         secretPath: data.secretPath,
         expandSecretReferences: data.expandSecretReferences,
         includeImports: data.includeImports,
+        recursive: data.recursive,
       });
 
       const response = {
@@ -741,6 +789,34 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           {
             type: "text",
             text: `Folder created successfully: ${JSON.stringify(folder, null, 3)}`,
+          },
+        ],
+      };
+    }
+
+    if (name === AvailableTools.ListFolders) {
+      const data = listFoldersSchema.zod.parse(args);
+
+      const folders = await infisicalSdk.folders().listFolders({
+        environment: data.environment,
+        projectId: data.projectId,
+        path: data.path,
+        recursive: data.recursive,
+      });
+
+      const response = {
+        folders: folders.map((folder) => ({
+          id: folder.id,
+          name: folder.name,
+          parentId: folder.parentId,
+        })),
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `${JSON.stringify(response)}`,
           },
         ],
       };
