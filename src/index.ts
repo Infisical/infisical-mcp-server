@@ -794,7 +794,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
               id: string;
             }[];
           }[];
-        }>(`${hostUrl}/v1/workspace?type=${data.type}`, {
+        }>(`${hostUrl}/v1/workspace${data.type && data.type !== "all" ? `?type=${data.type}` : ""}`, {
           headers: {
             Authorization: `Bearer ${accessToken}`,
           },
