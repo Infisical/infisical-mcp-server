@@ -1,13 +1,22 @@
 #!/usr/bin/env node
 
 import { InfisicalSDK } from "@infisical/sdk";
+import { randomUUID } from "crypto";
 import fs from "fs";
 import axios from "axios";
+import {
+  createServer as createHttpServer,
+  IncomingMessage,
+  Server as HttpServer,
+  ServerResponse,
+} from "http";
 import path from "path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import {
   CallToolRequestSchema,
+  isInitializeRequest,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -15,6 +24,27 @@ import { z } from "zod";
 enum InfisicalAuthMethod {
   UniversalAuth = "universal-auth",
   TokenAuth = "access-token",
+}
+
+enum McpTransportMode {
+  Stdio = "stdio",
+  StreamableHttp = "streamable-http",
+}
+
+type StreamableSession = {
+  lastActivityAt: number;
+  server: Server;
+  transport: StreamableHTTPServerTransport;
+};
+
+class HttpTransportError extends Error {
+  constructor(
+    public readonly statusCode: number,
+    public readonly jsonRpcCode: number,
+    message: string,
+  ) {
+    super(message);
+  }
 }
 
 const packageJson = JSON.parse(
@@ -35,6 +65,23 @@ const getEnvironmentVariables = () => {
         .min(1)
         .optional(),
       INFISICAL_HOST_URL: z.string().default("https://app.infisical.com"),
+      MCP_TRANSPORT: z
+        .nativeEnum(McpTransportMode)
+        .default(McpTransportMode.Stdio),
+      MCP_HTTP_HOST: z.string().default("127.0.0.1"),
+      MCP_HTTP_PORT: z.coerce.number().int().positive().default(3333),
+      MCP_HTTP_PATH: z
+        .string()
+        .trim()
+        .min(1)
+        .default("/mcp")
+        .transform((value) => (value.startsWith("/") ? value : `/${value}`)),
+      MCP_HTTP_BODY_LIMIT_BYTES: z.coerce
+        .number()
+        .int()
+        .positive()
+        .default(4 * 1024 * 1024),
+      MCP_HTTP_SESSION_TTL_MS: z.coerce.number().int().positive().default(300000),
     })
     // validate the env vars on startup to avoid runtime errors
     .superRefine((data, ctx) => {
@@ -105,18 +152,6 @@ const handleAuthentication = async () => {
 
   isAuthenticated = true;
 };
-
-const server = new Server(
-  {
-    name: "Infisical",
-    version: packageJson.version,
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  },
-);
 
 enum AvailableTools {
   CreateSecret = "create-secret",
@@ -532,7 +567,21 @@ const inviteMembersToProjectSchema = {
     },
   },
 };
-server.setRequestHandler(ListToolsRequestSchema, async () => {
+
+const createMcpServer = () => {
+  const server = new Server(
+    {
+      name: "Infisical",
+      version: packageJson.version,
+    },
+    {
+      capabilities: {
+        tools: {},
+      },
+    },
+  );
+
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
     tools: [
       createSecretSchema.capability,
@@ -547,9 +596,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       listProjectsSchema.capability,
     ],
   };
-});
+  });
 
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
   try {
     await handleAuthentication();
 
@@ -842,9 +891,371 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
     throw err;
   }
-});
+  });
 
-(async () => {
+  return server;
+};
+
+const readRequestBody = async (req: IncomingMessage) => {
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  let bodyLimitExceeded = false;
+
+  for await (const chunk of req) {
+    const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    totalBytes += bufferChunk.byteLength;
+
+    if (totalBytes > env.MCP_HTTP_BODY_LIMIT_BYTES) {
+      bodyLimitExceeded = true;
+      req.resume();
+      break;
+    }
+
+    chunks.push(bufferChunk);
+  }
+
+  if (bodyLimitExceeded) {
+    throw new HttpTransportError(
+      413,
+      -32000,
+      `Request body exceeds ${env.MCP_HTTP_BODY_LIMIT_BYTES} bytes.`,
+    );
+  }
+
+  if (chunks.length === 0) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString("utf-8"));
+  } catch {
+    throw new HttpTransportError(400, -32700, "Malformed JSON request body.");
+  }
+};
+
+const sendJson = (
+  res: ServerResponse,
+  statusCode: number,
+  body: Record<string, unknown>,
+) => {
+  const payload = JSON.stringify(body);
+  res.writeHead(statusCode, {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(payload),
+  });
+  res.end(payload);
+};
+
+const sendMethodNotAllowed = (res: ServerResponse) => {
+  res.writeHead(405, { allow: "POST, DELETE" });
+  res.end("Method Not Allowed");
+};
+
+const closeSession = async (
+  sessions: Map<string, StreamableSession>,
+  sessionId: string,
+) => {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return;
+  }
+
+  sessions.delete(sessionId);
+  await session.transport.close();
+  await session.server.close();
+};
+
+const touchSession = (session: StreamableSession) => {
+  session.lastActivityAt = Date.now();
+};
+
+const isSessionIdle = (session: StreamableSession) =>
+  Date.now() - session.lastActivityAt > env.MCP_HTTP_SESSION_TTL_MS;
+
+const getActiveSession = async (
+  sessions: Map<string, StreamableSession>,
+  sessionId: string,
+) => {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    return undefined;
+  }
+
+  if (isSessionIdle(session)) {
+    await closeSession(sessions, sessionId);
+    return undefined;
+  }
+
+  touchSession(session);
+  return session;
+};
+
+const startStreamableHttpServer = async () => {
+  const sessions = new Map<string, StreamableSession>();
+  const sweepIntervalMs = Math.max(
+    1000,
+    Math.min(env.MCP_HTTP_SESSION_TTL_MS, 60000),
+  );
+
+  const sweepIdleSessions = async () => {
+    const activeSessionIds = [...sessions.keys()];
+
+    for (const sessionId of activeSessionIds) {
+      const session = sessions.get(sessionId);
+      if (!session || !isSessionIdle(session)) {
+        continue;
+      }
+
+      await closeSession(sessions, sessionId);
+    }
+  };
+
+  const sweepTimer = setInterval(() => {
+    void sweepIdleSessions().catch((error) => {
+      console.error("Failed to sweep idle MCP sessions", error);
+    });
+  }, sweepIntervalMs);
+  sweepTimer.unref();
+
+  const server = createHttpServer(async (req, res) => {
+    if (!req.url) {
+      sendJson(res, 400, {
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "Bad Request: Missing request URL.",
+        },
+        id: null,
+      });
+      return;
+    }
+
+    const requestUrl = new URL(req.url, "http://localhost");
+
+    if (requestUrl.pathname === "/health" && req.method === "GET") {
+      sendJson(res, 200, {
+        status: "ok",
+        transport: McpTransportMode.StreamableHttp,
+        path: env.MCP_HTTP_PATH,
+        version: packageJson.version,
+      });
+      return;
+    }
+
+    if (requestUrl.pathname !== env.MCP_HTTP_PATH) {
+      sendJson(res, 404, {
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "Not Found.",
+        },
+        id: null,
+      });
+      return;
+    }
+
+    try {
+      switch (req.method) {
+        case "POST": {
+          const requestBody = await readRequestBody(req);
+          const sessionId = req.headers["mcp-session-id"];
+          const normalizedSessionId =
+            typeof sessionId === "string" ? sessionId : undefined;
+
+          if (normalizedSessionId) {
+            const existingSession = await getActiveSession(
+              sessions,
+              normalizedSessionId,
+            );
+            if (!existingSession) {
+              sendJson(res, 404, {
+                jsonrpc: "2.0",
+                error: {
+                  code: -32000,
+                  message: "Session not found.",
+                },
+                id: null,
+              });
+              return;
+            }
+
+            await existingSession.transport.handleRequest(req, res, requestBody);
+            return;
+          }
+
+          if (!isInitializeRequest(requestBody)) {
+            sendJson(res, 400, {
+              jsonrpc: "2.0",
+              error: {
+                code: -32000,
+                message: "Bad Request: No valid session ID provided.",
+              },
+              id: null,
+            });
+            return;
+          }
+
+          const sessionServer = createMcpServer();
+          const transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            enableJsonResponse: true,
+            onsessioninitialized: (newSessionId) => {
+              sessions.set(newSessionId, {
+                lastActivityAt: Date.now(),
+                server: sessionServer,
+                transport,
+              });
+            },
+          });
+
+          transport.onclose = () => {
+            const transportSessionId = transport.sessionId;
+            if (transportSessionId) {
+              sessions.delete(transportSessionId);
+            }
+          };
+
+          await sessionServer.connect(transport);
+          await transport.handleRequest(req, res, requestBody);
+          return;
+        }
+        case "GET": {
+          sendMethodNotAllowed(res);
+          return;
+        }
+        case "DELETE": {
+          const sessionId = req.headers["mcp-session-id"];
+          const normalizedSessionId =
+            typeof sessionId === "string" ? sessionId : undefined;
+
+          if (!normalizedSessionId) {
+            sendJson(res, 404, {
+              jsonrpc: "2.0",
+              error: {
+                code: -32000,
+                message: "Session not found.",
+              },
+              id: null,
+            });
+            return;
+          }
+
+          const session = await getActiveSession(sessions, normalizedSessionId);
+          if (!session) {
+            sendJson(res, 404, {
+              jsonrpc: "2.0",
+              error: {
+                code: -32000,
+                message: "Session not found.",
+              },
+              id: null,
+            });
+            return;
+          }
+
+          await session.transport.handleRequest(req, res);
+          await closeSession(sessions, normalizedSessionId);
+          return;
+        }
+        default: {
+          sendMethodNotAllowed(res);
+          return;
+        }
+      }
+    } catch (error) {
+      if (error instanceof HttpTransportError) {
+        if (!res.headersSent) {
+          sendJson(res, error.statusCode, {
+            jsonrpc: "2.0",
+            error: {
+              code: error.jsonRpcCode,
+              message: error.message,
+            },
+            id: null,
+          });
+        }
+        return;
+      }
+
+      console.error("Failed to handle streamable HTTP request", error);
+      if (!res.headersSent) {
+        sendJson(res, 500, {
+          jsonrpc: "2.0",
+          error: {
+            code: -32603,
+            message: "Internal server error.",
+          },
+          id: null,
+        });
+      }
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(env.MCP_HTTP_PORT, env.MCP_HTTP_HOST, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+
+  const closeAllSessions = async () => {
+    const activeSessionIds = [...sessions.keys()];
+    for (const sessionId of activeSessionIds) {
+      await closeSession(sessions, sessionId);
+    }
+  };
+
+  const shutdown = async () => {
+    clearInterval(sweepTimer);
+    await closeAllSessions();
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve();
+      });
+    });
+  };
+
+  process.on("SIGINT", () => {
+    void shutdown().finally(() => process.exit(0));
+  });
+
+  process.on("SIGTERM", () => {
+    void shutdown().finally(() => process.exit(0));
+  });
+
+  console.error(
+    `Infisical MCP Server running on streamable HTTP at http://${env.MCP_HTTP_HOST}:${env.MCP_HTTP_PORT}${env.MCP_HTTP_PATH} ✅`,
+  );
+};
+
+const startStdioServer = async () => {
+  const server = createMcpServer();
   await server.connect(new StdioServerTransport());
   console.error("Infisical MCP Server running on stdio ✅");
-})();
+};
+
+const main = async () => {
+  switch (env.MCP_TRANSPORT) {
+    case McpTransportMode.Stdio:
+      await startStdioServer();
+      break;
+    case McpTransportMode.StreamableHttp:
+      await startStreamableHttpServer();
+      break;
+    default:
+      throw new Error(`Unsupported MCP transport: ${env.MCP_TRANSPORT}`);
+  }
+};
+
+if (require.main === module) {
+  void main().catch((error) => {
+    console.error("Failed to start Infisical MCP Server", error);
+    process.exit(1);
+  });
+}

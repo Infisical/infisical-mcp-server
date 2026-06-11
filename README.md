@@ -13,12 +13,35 @@ In order to use the MCP server, you must first set the environment variables req
 - `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET`: The Machine Identity universal auth client secret. Required when `INFISICAL_AUTH_METHOD` is `universal-auth`.
 - `INFISICAL_TOKEN`: An access token for authentication. This can be both a personal access token or a machine identity access token. Required when `INFISICAL_AUTH_METHOD` is `access-token`.
 - `INFISICAL_HOST_URL`: **Optionally** set a custom host URL. This is useful if you're self-hosting Infisical or you're on dedicated infrastructure. Defaults to `https://app.infisical.com`.
+- `MCP_TRANSPORT`: The transport to use. Supported values are `stdio` and `streamable-http`. Defaults to `stdio`.
+- `MCP_HTTP_HOST`: Host interface for `streamable-http` mode. Defaults to `127.0.0.1`.
+- `MCP_HTTP_PORT`: Port for `streamable-http` mode. Defaults to `3333`.
+- `MCP_HTTP_PATH`: HTTP path for `streamable-http` mode. Defaults to `/mcp`.
+- `MCP_HTTP_BODY_LIMIT_BYTES`: Maximum accepted HTTP request body size in `streamable-http` mode. Defaults to `4194304` (4 MiB).
+- `MCP_HTTP_SESSION_TTL_MS`: Idle session TTL in `streamable-http` mode. Defaults to `300000` (5 minutes).
 
 To run the Infisical MCP server using npx, use the following command:
 
 ```bash
 npx -y @infisical/mcp
 ```
+
+### Streamable HTTP mode
+
+To run the server over Streamable HTTP instead of stdio:
+
+```bash
+MCP_TRANSPORT=streamable-http MCP_HTTP_PORT=3333 node dist/index.js
+```
+
+The server exposes:
+
+- MCP endpoint: `http://127.0.0.1:3333/mcp`
+- Health endpoint: `http://127.0.0.1:3333/health`
+
+This implementation uses the official `StreamableHTTPServerTransport` from
+`@modelcontextprotocol/sdk` and keeps stdio as the default for compatibility.
+Idle HTTP sessions are automatically reaped after the configured TTL.
 
 ### Usage with Claude Desktop
 
@@ -90,6 +113,14 @@ Run the following command in your terminal:
 ```bash
 # Start MCP Inspector and server
 npx @modelcontextprotocol/inspector node dist/index.js
+```
+
+For Streamable HTTP mode, build first and then point your MCP client at the
+configured HTTP endpoint:
+
+```bash
+npm run build
+MCP_TRANSPORT=streamable-http node dist/index.js
 ```
 
 ### Instructions
