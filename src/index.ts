@@ -138,6 +138,11 @@ const createSecretSchema = {
     secretName: z.string(),
     secretValue: z.string().optional(),
     secretPath: z.string().default("/"),
+    secretComment: z.string().optional(),
+    secretReminderNote: z.string().optional(),
+    secretReminderRepeatDays: z.number().optional(),
+    skipMultilineEncoding: z.boolean().optional(),
+    tagIds: z.array(z.string()).optional(),
   }),
   capability: {
     name: AvailableTools.CreateSecret,
@@ -166,6 +171,29 @@ const createSecretSchema = {
         secretPath: {
           type: "string",
           description: "The path of the secret to create (Defaults to /)",
+        },
+        secretComment: {
+          type: "string",
+          description:
+            "Optional comment/description for the secret (for documentation purposes)",
+        },
+        secretReminderNote: {
+          type: "string",
+          description: "Optional reminder note attached to the secret",
+        },
+        secretReminderRepeatDays: {
+          type: "number",
+          description: "Optional reminder repeat interval in days",
+        },
+        skipMultilineEncoding: {
+          type: "boolean",
+          description:
+            "Skip multiline encoding for secret values containing newlines",
+        },
+        tagIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional array of tag IDs to attach to the secret",
         },
       },
       required: ["projectId", "environmentSlug", "secretName"],
@@ -218,6 +246,11 @@ const updateSecretSchema = {
     newSecretName: z.string().optional(),
     secretValue: z.string().optional(),
     secretPath: z.string().default("/"),
+    secretComment: z.string().optional(),
+    secretReminderNote: z.string().optional(),
+    secretReminderRepeatDays: z.number().optional(),
+    skipMultilineEncoding: z.boolean().optional(),
+    tagIds: z.array(z.string()).optional(),
   }),
   capability: {
     name: AvailableTools.UpdateSecret,
@@ -250,6 +283,29 @@ const updateSecretSchema = {
         secretPath: {
           type: "string",
           description: "The path of the secret to update (Defaults to /)",
+        },
+        secretComment: {
+          type: "string",
+          description:
+            "Optional comment/description for the secret. Note: if omitted, existing comment is preserved (partial update).",
+        },
+        secretReminderNote: {
+          type: "string",
+          description: "Optional reminder note attached to the secret",
+        },
+        secretReminderRepeatDays: {
+          type: "number",
+          description: "Optional reminder repeat interval in days",
+        },
+        skipMultilineEncoding: {
+          type: "boolean",
+          description:
+            "Skip multiline encoding for secret values containing newlines",
+        },
+        tagIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "Optional array of tag IDs to attach to the secret",
         },
       },
       required: ["projectId", "environmentSlug", "secretName"],
@@ -558,14 +614,27 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     if (name === AvailableTools.CreateSecret) {
       const data = createSecretSchema.zod.parse(args);
 
+      const createOpts: Parameters<
+        ReturnType<typeof infisicalSdk.secrets>["createSecret"]
+      >[1] = {
+        environment: data.environmentSlug,
+        projectId: data.projectId,
+        secretPath: data.secretPath,
+        secretValue: data.secretValue ?? "",
+      };
+      if (data.secretComment !== undefined)
+        createOpts.secretComment = data.secretComment;
+      if (data.secretReminderNote !== undefined)
+        createOpts.secretReminderNote = data.secretReminderNote;
+      if (data.secretReminderRepeatDays !== undefined)
+        createOpts.secretReminderRepeatDays = data.secretReminderRepeatDays;
+      if (data.skipMultilineEncoding !== undefined)
+        createOpts.skipMultilineEncoding = data.skipMultilineEncoding;
+      if (data.tagIds !== undefined) createOpts.tagIds = data.tagIds;
+
       const { secret } = await infisicalSdk
         .secrets()
-        .createSecret(data.secretName, {
-          environment: data.environmentSlug,
-          projectId: data.projectId,
-          secretPath: data.secretPath,
-          secretValue: data.secretValue ?? "",
-        });
+        .createSecret(data.secretName, createOpts);
 
       return {
         content: [
@@ -601,14 +670,30 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     if (name === AvailableTools.UpdateSecret) {
       const data = updateSecretSchema.zod.parse(args);
 
+      const updateOpts: Parameters<
+        ReturnType<typeof infisicalSdk.secrets>["updateSecret"]
+      >[1] = {
+        environment: data.environmentSlug,
+        projectId: data.projectId,
+        secretPath: data.secretPath,
+      };
+      if (data.secretValue !== undefined)
+        updateOpts.secretValue = data.secretValue;
+      if (data.newSecretName !== undefined)
+        updateOpts.newSecretName = data.newSecretName;
+      if (data.secretComment !== undefined)
+        updateOpts.secretComment = data.secretComment;
+      if (data.secretReminderNote !== undefined)
+        updateOpts.secretReminderNote = data.secretReminderNote;
+      if (data.secretReminderRepeatDays !== undefined)
+        updateOpts.secretReminderRepeatDays = data.secretReminderRepeatDays;
+      if (data.skipMultilineEncoding !== undefined)
+        updateOpts.skipMultilineEncoding = data.skipMultilineEncoding;
+      if (data.tagIds !== undefined) updateOpts.tagIds = data.tagIds;
+
       const { secret } = await infisicalSdk
         .secrets()
-        .updateSecret(data.secretName, {
-          environment: data.environmentSlug,
-          projectId: data.projectId,
-          secretPath: data.secretPath,
-          secretValue: data.secretValue ?? "",
-        });
+        .updateSecret(data.secretName, updateOpts);
 
       return {
         content: [
