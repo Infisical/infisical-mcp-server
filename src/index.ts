@@ -77,6 +77,21 @@ const getEnvironmentVariables = () => {
 };
 
 const env = getEnvironmentVariables();
+
+// SECURITY: Capability flag for secret-value reads via this MCP instance.
+// Default is `disabled`. Set to `enabled` only in disposable debug sessions.
+// When the capability is disabled:
+//   - `list-secrets` schema omits the `includeValues` parameter
+//   - `list-secrets` handler always masks values regardless of caller input
+//   - `get-secret` rejects all calls
+// Two distinct axes:
+//   - VALUE_ACCESS: operator-controlled env var, gates whether the MCP
+//     instance CAN return values at all.
+//   - includeValues (per call): caller-controlled tool param, opts in for
+//     this specific call. Only meaningful when VALUE_ACCESS is enabled.
+const VALUE_ACCESS =
+  process.env.INFISICAL_MCP_VALUE_ACCESS === "enabled";
+
 let isAuthenticated = false;
 const infisicalSdk = new InfisicalSDK({
   siteUrl: env.INFISICAL_HOST_URL,
@@ -257,44 +272,62 @@ const updateSecretSchema = {
   },
 };
 
+const listSecretsInputProperties: Record<string, unknown> = {
+  projectId: {
+    type: "string",
+    description:
+      "The ID of the project to list the secrets from (required)",
+  },
+  environmentSlug: {
+    type: "string",
+    description:
+      "The slug of the environment to list the secrets from (required)",
+  },
+  secretPath: {
+    type: "string",
+    description: "The path of the secrets to list (Defaults to /)",
+  },
+  expandSecretReferences: {
+    type: "boolean",
+    description: "Whether to expand secret references (Defaults to true)",
+  },
+  includeImports: {
+    type: "boolean",
+    description: "Whether to include secret imports (Defaults to true)",
+  },
+};
+
+if (VALUE_ACCESS) {
+  listSecretsInputProperties.includeValues = {
+    type: "boolean",
+    description:
+      "Whether to include secret values in the response (Defaults to false). EXPOSES VALUES TO LLM CONTEXT. Only use when caller genuinely needs values. Requires INFISICAL_MCP_VALUE_ACCESS=enabled on the server.",
+  };
+}
+
+const listSecretsZodShape: Record<string, any> = {
+  projectId: z.string(),
+  environmentSlug: z.string(),
+  secretPath: z.string().default("/"),
+  expandSecretReferences: z.boolean().default(true),
+  includeImports: z.boolean().default(true),
+};
+if (VALUE_ACCESS) {
+  listSecretsZodShape.includeValues = z.boolean().default(false);
+}
+
 const listSecretsSchema = {
-  zod: z.object({
-    projectId: z.string(),
-    environmentSlug: z.string(),
-    secretPath: z.string().default("/"),
-    expandSecretReferences: z.boolean().default(true),
-    includeImports: z.boolean().default(true),
-  }),
+  zod: z.object(listSecretsZodShape),
   capability: {
     name: AvailableTools.ListSecrets,
     description:
-      "List all secrets in a given Infisical project and environment",
+      "List all secrets in a given Infisical project and environment. Secret values are MASKED by default (only keys returned) to prevent accidental leaks to LLM context / provider logs." +
+      (VALUE_ACCESS
+        ? " Server flag INFISICAL_MCP_VALUE_ACCESS=enabled is active — the includeValues parameter is exposed; use with extreme caution."
+        : " Server flag INFISICAL_MCP_VALUE_ACCESS is disabled — secret values cannot be returned by this MCP instance."),
     inputSchema: {
       type: "object",
-      properties: {
-        projectId: {
-          type: "string",
-          description:
-            "The ID of the project to list the secrets from (required)",
-        },
-        environmentSlug: {
-          type: "string",
-          description:
-            "The slug of the environment to list the secrets from (required)",
-        },
-        secretPath: {
-          type: "string",
-          description: "The path of the secrets to list (Defaults to /)",
-        },
-        expandSecretReferences: {
-          type: "boolean",
-          description: "Whether to expand secret references (Defaults to true)",
-        },
-        includeImports: {
-          type: "boolean",
-          description: "Whether to include secret imports (Defaults to true)",
-        },
-      },
+      properties: listSecretsInputProperties,
       required: ["projectId", "environmentSlug"],
     },
   },
@@ -623,6 +656,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     if (name === AvailableTools.ListSecrets) {
       const data = listSecretsSchema.zod.parse(args);
 
+      // SECURITY: caller must satisfy both axes to receive values:
+      //   1. VALUE_ACCESS capability must be enabled (operator env var).
+      //   2. The per-call includeValues parameter must be true.
+      // The Zod schema also strips includeValues when capability is off, so
+      // callers shouldn't be able to set it at all — this is belt-and-suspenders.
+      const includeValuesInResponse =
+        VALUE_ACCESS && data.includeValues === true;
+
       const secrets = await infisicalSdk.secrets().listSecrets({
         environment: data.environmentSlug,
         projectId: data.projectId,
@@ -631,23 +672,20 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         includeImports: data.includeImports,
       });
 
-      const response = {
-        secrets: secrets.secrets.map((secret) => ({
-          secretKey: secret.secretKey,
-          secretValue: secret.secretValue,
-        })),
-        ...(secrets.imports && {
-          imports: secrets.imports?.map((imp) => {
-            const parsedImportSecrets = imp.secrets.map((secret) => ({
-              secretKey: secret.secretKey,
-              secretValue: secret.secretValue,
-            }));
+      const mapSecret = (secret: { secretKey: string; secretValue: string }) =>
+        includeValuesInResponse
+          ? { secretKey: secret.secretKey, secretValue: secret.secretValue }
+          : { secretKey: secret.secretKey };
 
-            return {
-              ...imp,
-              secrets: parsedImportSecrets,
-            };
-          }),
+      const response = {
+        valuesMasked: !includeValuesInResponse,
+        valueAccessDisabledByServer: !VALUE_ACCESS,
+        secrets: secrets.secrets.map(mapSecret),
+        ...(secrets.imports && {
+          imports: secrets.imports?.map((imp) => ({
+            ...imp,
+            secrets: imp.secrets.map(mapSecret),
+          })),
         }),
       };
 
@@ -662,6 +700,24 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
     }
 
     if (name === AvailableTools.GetSecret) {
+      // SECURITY: get-secret always returns a secret value, so it is gated
+      // behind the same VALUE_ACCESS capability as list-secrets includeValues.
+      if (!VALUE_ACCESS) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify({
+                error: "get-secret is disabled",
+                reason:
+                  "Server flag INFISICAL_MCP_VALUE_ACCESS is not set to 'enabled'. This MCP instance cannot return secret values. Set the flag and restart the MCP to enable value reads.",
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+
       const data = getSecretSchema.zod.parse(args);
 
       const secret = await infisicalSdk.secrets().getSecret({
