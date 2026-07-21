@@ -344,7 +344,9 @@ const getSecretSchema = {
   }),
   capability: {
     name: AvailableTools.GetSecret,
-    description: "Get a secret in Infisical",
+    description: VALUE_ACCESS
+      ? "Get a secret in Infisical"
+      : "Get a secret in Infisical — DISABLED on this server. Set INFISICAL_MCP_VALUE_ACCESS=enabled and restart the MCP to enable value reads.",
     inputSchema: {
       type: "object",
       properties: {
