@@ -14,6 +14,15 @@ In order to use the MCP server, you must first set the environment variables req
 - `INFISICAL_TOKEN`: An access token for authentication. This can be both a personal access token or a machine identity access token. Required when `INFISICAL_AUTH_METHOD` is `access-token`.
 - `INFISICAL_HOST_URL`: **Optionally** set a custom host URL. This is useful if you're self-hosting Infisical or you're on dedicated infrastructure. Defaults to `https://app.infisical.com`.
 
+### Limiting what the server exposes
+
+Both of these are optional, and their defaults keep the server's existing behaviour.
+
+- `INFISICAL_ENABLED_TOOLS`: a comma-separated allowlist of tools to expose. Tools left out are hidden from `tools/list` and refused if called. Omit it to expose every tool. For a read-only server, set it to `list-projects,list-secrets,get-secret`.
+- `INFISICAL_MASK_SECRET_VALUES`: set to `true` to replace secret values in tool responses with `<masked>`, keeping secret material out of the model's context. Secret names, paths, and other metadata are still returned. Defaults to `false`.
+
+Scope the machine identity to only the projects and environments the server needs, rather than using a token with broader access than the exposed tools require.
+
 To run the Infisical MCP server using npx, use the following command:
 
 ```bash

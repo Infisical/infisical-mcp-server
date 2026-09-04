@@ -1,0 +1,51 @@
+---
+name: Test
+run-name: Test
+
+on:
+    pull_request:
+    push:
+        branches:
+            - main
+
+permissions:
+  contents: read
+
+jobs:
+    test:
+        name: Typecheck, build and test
+        runs-on: ubuntu-22.04
+        steps:
+            - name: Checkout repo
+              uses: actions/checkout@b4ffde65f46336ab88eb53be808477a3936bae11 # v4.1.1
+
+            - name: Setup Node
+              uses: actions/setup-node@8f152de45cc393bb48ce5d89d36b731f54556e65 # v4.0.0
+              with:
+                node-version: '24.14.0'
+                cache: "npm"
+                cache-dependency-path: package-lock.json
+
+            - name: Install dependencies
+              run: npm ci
+
+            - name: Typecheck
+              run: npm run typecheck
+
+            - name: Build
+              run: npm run build
+
+            - name: Test
+              run: npm test
+
+            - name: Check error logging
+              run: |
+                if grep -rnE 'console\.(error|log|warn)\(\s*(err|error|e)\s*\)' src/; then
+                  echo "Log a formatted message, not the error object itself."
+                  exit 1
+                fi
+
+            # advisory until the outstanding runtime advisories are cleared
+            - name: Audit runtime dependencies
+              run: npm audit --omit=dev
+              continue-on-error: true

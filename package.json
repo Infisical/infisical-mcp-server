@@ -26,7 +26,10 @@
   "description": "Official Infisical MCP Server",
   "license": "Apache-2.0",
   "scripts": {
-    "build": "tsup src/index.ts --out-dir dist --format cjs --tsconfig tsconfig.json --no-splitting"
+    "build": "tsup src/index.ts --out-dir dist --format cjs --tsconfig tsconfig.json --no-splitting",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "pretest": "npm run build",
+    "test": "node --test \"test/**/*.test.js\""
   },
 
   "overrides": {
@@ -37,11 +40,11 @@
     "@infisical/sdk": "4.0.1",
     "@modelcontextprotocol/sdk": "^1.9.0",
     "axios": "^1.9.0",
-    "typescript": "^5.8.3",
     "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
-    "tsup": "^8.4.0"
+    "tsup": "^8.4.0",
+    "typescript": "^5.8.3"
   }
 }

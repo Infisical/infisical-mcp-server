@@ -17,6 +17,23 @@ enum InfisicalAuthMethod {
   TokenAuth = "access-token",
 }
 
+enum AvailableTools {
+  CreateSecret = "create-secret",
+  DeleteSecret = "delete-secret",
+  UpdateSecret = "update-secret",
+  ListSecrets = "list-secrets",
+  GetSecret = "get-secret",
+  CreateProject = "create-project",
+  CreateEnvironment = "create-environment",
+  CreateFolder = "create-folder",
+  InviteMembersToProject = "invite-members-to-project",
+  ListProjects = "list-projects",
+}
+
+const ALL_TOOLS = Object.values(AvailableTools);
+
+const MASKED_VALUE = "<masked>";
+
 const packageJson = JSON.parse(
   fs.readFileSync(path.join(__dirname, "../package.json"), "utf-8"),
 ) as { version: string };
@@ -34,7 +51,47 @@ const getEnvironmentVariables = () => {
         .trim()
         .min(1)
         .optional(),
-      INFISICAL_HOST_URL: z.string().default("https://app.infisical.com"),
+      INFISICAL_HOST_URL: z
+        .string()
+        .url()
+        .default("https://app.infisical.com"),
+      INFISICAL_ENABLED_TOOLS: z
+        .string()
+        .trim()
+        .optional()
+        .transform((val, ctx) => {
+          if (!val) return ALL_TOOLS;
+
+          const requested = val
+            .split(",")
+            .map((name) => name.trim())
+            .filter(Boolean);
+
+          const unknown = requested.filter(
+            (name) => !ALL_TOOLS.includes(name as AvailableTools),
+          );
+          if (unknown.length) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message: `INFISICAL_ENABLED_TOOLS contains unknown tool(s): ${unknown.join(", ")}. Valid tools are: ${ALL_TOOLS.join(", ")}`,
+            });
+            return z.NEVER;
+          }
+          if (!requested.length) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              message:
+                "INFISICAL_ENABLED_TOOLS was set but lists no tools. Omit it to expose every tool.",
+            });
+            return z.NEVER;
+          }
+
+          return requested as AvailableTools[];
+        }),
+      INFISICAL_MASK_SECRET_VALUES: z
+        .enum(["true", "false"])
+        .default("false")
+        .transform((val) => val === "true"),
     })
     // validate the env vars on startup to avoid runtime errors
     .superRefine((data, ctx) => {
@@ -106,6 +163,14 @@ const handleAuthentication = async () => {
   isAuthenticated = true;
 };
 
+const maskSecret = <T extends { secretValue?: string }>(secret: T): T => {
+  if (!env.INFISICAL_MASK_SECRET_VALUES || secret.secretValue === undefined) {
+    return secret;
+  }
+
+  return { ...secret, secretValue: MASKED_VALUE };
+};
+
 const server = new Server(
   {
     name: "Infisical",
@@ -118,19 +183,6 @@ const server = new Server(
   },
 );
 
-enum AvailableTools {
-  CreateSecret = "create-secret",
-  DeleteSecret = "delete-secret",
-  UpdateSecret = "update-secret",
-  ListSecrets = "list-secrets",
-  GetSecret = "get-secret",
-  CreateProject = "create-project",
-  CreateEnvironment = "create-environment",
-  CreateFolder = "create-folder",
-  InviteMembersToProject = "invite-members-to-project",
-  ListProjects = "list-projects",
-}
-
 const createSecretSchema = {
   zod: z.object({
     projectId: z.string(),
@@ -141,6 +193,12 @@ const createSecretSchema = {
   }),
   capability: {
     name: AvailableTools.CreateSecret,
+    annotations: {
+      title: "Create secret",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+    },
     description: "Create a new secret in Infisical",
     inputSchema: {
       type: "object",
@@ -182,6 +240,12 @@ const deleteSecretSchema = {
   }),
   capability: {
     name: AvailableTools.DeleteSecret,
+    annotations: {
+      title: "Delete secret",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+    },
     description: "Delete a secret in Infisical",
     inputSchema: {
       type: "object",
@@ -221,6 +285,12 @@ const updateSecretSchema = {
   }),
   capability: {
     name: AvailableTools.UpdateSecret,
+    annotations: {
+      title: "Update secret",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+    },
     description: "Update a secret in Infisical",
     inputSchema: {
       type: "object",
@@ -267,6 +337,12 @@ const listSecretsSchema = {
   }),
   capability: {
     name: AvailableTools.ListSecrets,
+    annotations: {
+      title: "List secrets",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+    },
     description:
       "List all secrets in a given Infisical project and environment",
     inputSchema: {
@@ -311,6 +387,12 @@ const getSecretSchema = {
   }),
   capability: {
     name: AvailableTools.GetSecret,
+    annotations: {
+      title: "Get secret",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+    },
     description: "Get a secret in Infisical",
     inputSchema: {
       type: "object",
@@ -351,7 +433,13 @@ const getSecretSchema = {
 const createProjectSchema = {
   zod: z.object({
     projectName: z.string(),
-    type: z.enum(["secret-manager", "cert-manager", "kms", "ssh"]),
+    type: z.enum([
+      "secret-manager",
+      "cert-manager",
+      "kms",
+      "secret-scanning",
+      "pam",
+    ]),
     description: z.string().optional(),
     slug: z.string().optional(),
     projectTemplate: z.string().optional(),
@@ -359,6 +447,12 @@ const createProjectSchema = {
   }),
   capability: {
     name: AvailableTools.CreateProject,
+    annotations: {
+      title: "Create project",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+    },
     description: "Create a new project in Infisical",
     inputSchema: {
       type: "object",
@@ -404,6 +498,12 @@ const createEnvironmentSchema = {
   }),
   capability: {
     name: AvailableTools.CreateEnvironment,
+    annotations: {
+      title: "Create environment",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+    },
     description: "Create a new environment in Infisical",
     inputSchema: {
       type: "object",
@@ -442,6 +542,12 @@ const createFolderSchema = {
   }),
   capability: {
     name: AvailableTools.CreateFolder,
+    annotations: {
+      title: "Create folder",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+    },
     description: "Create a new folder in Infisical",
     inputSchema: {
       type: "object",
@@ -475,11 +581,24 @@ const createFolderSchema = {
 const listProjectsSchema = {
   zod: z.object({
     type: z
-      .enum(["secret-manager", "cert-manager", "kms", "ssh", "all"])
+      .enum([
+        "secret-manager",
+        "cert-manager",
+        "kms",
+        "secret-scanning",
+        "pam",
+        "all",
+      ])
       .default("all"),
   }),
   capability: {
     name: AvailableTools.ListProjects,
+    annotations: {
+      title: "List projects",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+    },
     description:
       "List all projects in Infisical that the machine identity has access to. If the user asks to list all projects, use the `all` type parameter.",
     inputSchema: {
@@ -504,6 +623,12 @@ const inviteMembersToProjectSchema = {
   }),
   capability: {
     name: AvailableTools.InviteMembersToProject,
+    annotations: {
+      title: "Invite members to project",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+    },
     description: "Invite members to a project in Infisical",
     inputSchema: {
       type: "object",
@@ -532,28 +657,42 @@ const inviteMembersToProjectSchema = {
     },
   },
 };
+const allCapabilities = [
+  createSecretSchema.capability,
+  deleteSecretSchema.capability,
+  updateSecretSchema.capability,
+  listSecretsSchema.capability,
+  getSecretSchema.capability,
+  createProjectSchema.capability,
+  createEnvironmentSchema.capability,
+  createFolderSchema.capability,
+  inviteMembersToProjectSchema.capability,
+  listProjectsSchema.capability,
+];
+
+const isToolEnabled = (name: string) =>
+  env.INFISICAL_ENABLED_TOOLS.includes(name as AvailableTools);
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
-    tools: [
-      createSecretSchema.capability,
-      deleteSecretSchema.capability,
-      updateSecretSchema.capability,
-      listSecretsSchema.capability,
-      getSecretSchema.capability,
-      createProjectSchema.capability,
-      createEnvironmentSchema.capability,
-      createFolderSchema.capability,
-      inviteMembersToProjectSchema.capability,
-      listProjectsSchema.capability,
-    ],
+    tools: allCapabilities.filter((capability) =>
+      isToolEnabled(capability.name),
+    ),
   };
 });
 
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   try {
-    await handleAuthentication();
-
     const { name, arguments: args } = req.params;
+
+    // gate before authenticating so a disabled tool never touches credentials
+    if (!isToolEnabled(name)) {
+      throw new Error(
+        `Tool "${name}" is not enabled on this server. Enabled tools: ${env.INFISICAL_ENABLED_TOOLS.join(", ")}`,
+      );
+    }
+
+    await handleAuthentication();
 
     if (name === AvailableTools.CreateSecret) {
       const data = createSecretSchema.zod.parse(args);
@@ -571,7 +710,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         content: [
           {
             type: "text",
-            text: `Secret created successfully: ${JSON.stringify(secret, null, 3)}`,
+            text: `Secret created successfully: ${JSON.stringify(maskSecret(secret), null, 3)}`,
           },
         ],
       };
@@ -614,7 +753,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         content: [
           {
             type: "text",
-            text: `Secret updated successfully. Updated secret: ${JSON.stringify(secret, null, 3)}`,
+            text: `Secret updated successfully. Updated secret: ${JSON.stringify(maskSecret(secret), null, 3)}`,
           },
         ],
       };
@@ -632,16 +771,20 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       });
 
       const response = {
-        secrets: secrets.secrets.map((secret) => ({
-          secretKey: secret.secretKey,
-          secretValue: secret.secretValue,
-        })),
+        secrets: secrets.secrets.map((secret) =>
+          maskSecret({
+            secretKey: secret.secretKey,
+            secretValue: secret.secretValue,
+          }),
+        ),
         ...(secrets.imports && {
           imports: secrets.imports?.map((imp) => {
-            const parsedImportSecrets = imp.secrets.map((secret) => ({
-              secretKey: secret.secretKey,
-              secretValue: secret.secretValue,
-            }));
+            const parsedImportSecrets = imp.secrets.map((secret) =>
+              maskSecret({
+                secretKey: secret.secretKey,
+                secretValue: secret.secretValue,
+              }),
+            );
 
             return {
               ...imp,
@@ -677,7 +820,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         content: [
           {
             type: "text",
-            text: `Secret retrieved successfully: ${JSON.stringify(secret, null, 3)}`,
+            text: `Secret retrieved successfully: ${JSON.stringify(maskSecret(secret), null, 3)}`,
           },
         ],
       };
@@ -780,6 +923,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           hostUrl += "/api";
         }
 
+        // the API has no "all" type; omitting the filter returns every project
+        const typeQuery =
+          data.type === "all" ? "" : `?type=${encodeURIComponent(data.type)}`;
+
         const res = await axios.get<{
           workspaces: {
             hasDeleteProtection: boolean;
@@ -794,7 +941,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
               id: string;
             }[];
           }[];
-        }>(`${hostUrl}/v1/workspace?type=${data.type}`, {
+        }>(`${hostUrl}/v1/workspace${typeQuery}`, {
           headers: {
             Authorization: `Bearer ${accessToken}`,
           },
