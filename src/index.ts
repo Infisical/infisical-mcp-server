@@ -32,6 +32,17 @@ enum AvailableTools {
 
 const ALL_TOOLS = Object.values(AvailableTools);
 
+// must match ProjectType in the API; advertised to clients as-is
+const PROJECT_TYPES = [
+  "secret-manager",
+  "cert-manager",
+  "kms",
+  "secret-scanning",
+  "pam",
+] as const;
+
+const LIST_PROJECT_TYPES = [...PROJECT_TYPES, "all"] as const;
+
 const MASKED_VALUE = "<masked>";
 
 const packageJson = JSON.parse(
@@ -90,9 +101,22 @@ const getEnvironmentVariables = () => {
           return requested as AvailableTools[];
         }),
       INFISICAL_MASK_SECRET_VALUES: z
-        .enum(["true", "false"])
-        .default("false")
-        .transform((val) => val === "true"),
+        .string()
+        .trim()
+        .optional()
+        .transform((val, ctx) => {
+          if (!val) return false;
+
+          const normalized = val.toLowerCase();
+          if (["true", "1", "yes"].includes(normalized)) return true;
+          if (["false", "0", "no"].includes(normalized)) return false;
+
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `INFISICAL_MASK_SECRET_VALUES must be true or false, received "${val}"`,
+          });
+          return z.NEVER;
+        }),
     })
     // validate the env vars on startup to avoid runtime errors
     .superRefine((data, ctx) => {
@@ -434,13 +458,7 @@ const getSecretSchema = {
 const createProjectSchema = {
   zod: z.object({
     projectName: z.string(),
-    type: z.enum([
-      "secret-manager",
-      "cert-manager",
-      "kms",
-      "secret-scanning",
-      "pam",
-    ]),
+    type: z.enum(PROJECT_TYPES),
     description: z.string().optional(),
     slug: z.string().optional(),
     projectTemplate: z.string().optional(),
@@ -464,6 +482,7 @@ const createProjectSchema = {
         },
         type: {
           type: "string",
+          enum: [...PROJECT_TYPES],
           description:
             "The type of project to create (required). If not specified by the user, ask them to confirm the type they want to use.",
         },
@@ -581,16 +600,7 @@ const createFolderSchema = {
 
 const listProjectsSchema = {
   zod: z.object({
-    type: z
-      .enum([
-        "secret-manager",
-        "cert-manager",
-        "kms",
-        "secret-scanning",
-        "pam",
-        "all",
-      ])
-      .default("all"),
+    type: z.enum(LIST_PROJECT_TYPES).default("all"),
   }),
   capability: {
     name: AvailableTools.ListProjects,
@@ -607,6 +617,7 @@ const listProjectsSchema = {
       properties: {
         type: {
           type: "string",
+          enum: [...LIST_PROJECT_TYPES],
           description:
             "The type of projects to retrieve. If not specified, `all` projects will be retrieved.",
         },
@@ -685,6 +696,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   try {
     const { name, arguments: args } = req.params;
+
+    if (!ALL_TOOLS.includes(name as AvailableTools)) {
+      throw new Error(`Unrecognized tool name: ${name}`);
+    }
 
     // gate before authenticating so a disabled tool never touches credentials
     if (!isToolEnabled(name)) {
