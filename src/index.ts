@@ -821,7 +821,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           ],
         };
       } catch (err) {
-        console.error(err);
+        // log the message rather than the whole error object
+        console.error(`Error retrieving projects: ${(err as Error).message}`);
         return {
           content: [
             {
