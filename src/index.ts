@@ -32,7 +32,7 @@ enum AvailableTools {
 
 const ALL_TOOLS = Object.values(AvailableTools);
 
-// must match ProjectType in the API; advertised to clients as-is
+// must match ProjectType in the API
 const PROJECT_TYPES = [
   "secret-manager",
   "cert-manager",
@@ -44,6 +44,25 @@ const PROJECT_TYPES = [
 const LIST_PROJECT_TYPES = [...PROJECT_TYPES, "all"] as const;
 
 const MASKED_VALUE = "<masked>";
+
+// a blank value means unset; env templates often declare every key empty
+const stringBoolean = (defaultValue: boolean) =>
+  z
+    .string()
+    .trim()
+    .toLowerCase()
+    .optional()
+    .transform((val, ctx) => {
+      if (!val) return defaultValue;
+      if (val === "true") return true;
+      if (val === "false") return false;
+
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `must be "true" or "false", received "${val}"`,
+      });
+      return z.NEVER;
+    });
 
 const packageJson = JSON.parse(
   fs.readFileSync(path.join(__dirname, "../package.json"), "utf-8"),
@@ -100,23 +119,7 @@ const getEnvironmentVariables = () => {
 
           return requested as AvailableTools[];
         }),
-      INFISICAL_MASK_SECRET_VALUES: z
-        .string()
-        .trim()
-        .optional()
-        .transform((val, ctx) => {
-          if (!val) return false;
-
-          const normalized = val.toLowerCase();
-          if (["true", "1", "yes"].includes(normalized)) return true;
-          if (["false", "0", "no"].includes(normalized)) return false;
-
-          ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            message: `INFISICAL_MASK_SECRET_VALUES must be true or false, received "${val}"`,
-          });
-          return z.NEVER;
-        }),
+      INFISICAL_MASK_SECRET_VALUES: stringBoolean(false),
     })
     // validate the env vars on startup to avoid runtime errors
     .superRefine((data, ctx) => {
