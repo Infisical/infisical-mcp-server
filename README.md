@@ -14,6 +14,8 @@ In order to use the MCP server, you must first set the environment variables req
 - `INFISICAL_TOKEN`: An access token for authentication. This can be both a personal access token or a machine identity access token. Required when `INFISICAL_AUTH_METHOD` is `access-token`.
 - `INFISICAL_HOST_URL`: **Optionally** set a custom host URL. This is useful if you're self-hosting Infisical or you're on dedicated infrastructure. Defaults to `https://app.infisical.com`.
 
+See [Limiting what the server exposes](#limiting-what-the-server-exposes) for two optional variables that restrict which tools are available and whether secret values are returned.
+
 To run the Infisical MCP server using npx, use the following command:
 
 ```bash
@@ -74,6 +76,15 @@ Add the following to your `claude_desktop_config.json`. See [here](https://model
 | `create-folder`             | Create a new folder                     |
 | `invite-members-to-project` | Invite one or more members to a project |
 | `list-projects`             | List all projects                       |
+
+## Limiting what the server exposes
+
+Both variables are optional, and their defaults keep the server's existing behaviour.
+
+- `INFISICAL_ENABLED_TOOLS`: a comma-separated allowlist of tools to expose, using the tool names from the table above (for example `list-projects,list-secrets,get-secret` for a read-only server). Tools left out are hidden from `tools/list` and refused if called. An unknown name fails at startup. Omit the variable to expose every tool.
+- `INFISICAL_MASK_SECRET_VALUES`: `true` or `false`, case-insensitive. Defaults to `false`. When `true`, secret values in tool responses are replaced with `<masked>`, keeping secret material out of the model's context. Secret names, paths, and other metadata are still returned.
+
+Scope the machine identity to only the projects and environments the server needs, rather than using a token with broader access than the exposed tools require.
 
 ## Debugging the Server
 
