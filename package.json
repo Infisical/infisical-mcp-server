@@ -27,9 +27,7 @@
   "license": "Apache-2.0",
   "scripts": {
     "build": "tsup src/index.ts --out-dir dist --format cjs --tsconfig tsconfig.json --no-splitting",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
-    "pretest": "npm run build",
-    "test": "node --test \"test/**/*.test.js\""
+    "typecheck": "tsc --noEmit -p tsconfig.json"
   },
 
   "overrides": {

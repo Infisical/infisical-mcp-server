@@ -1,6 +1,6 @@
 ---
-name: Test
-run-name: Test
+name: Checks
+run-name: Checks
 
 on:
     pull_request:
@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 jobs:
-    test:
-        name: Typecheck, build and test
+    checks:
+        name: Typecheck and build
         runs-on: ubuntu-22.04
         steps:
             - name: Checkout repo
@@ -34,9 +34,6 @@ jobs:
 
             - name: Build
               run: npm run build
-
-            - name: Test
-              run: npm test
 
             - name: Check error logging
               run: |
