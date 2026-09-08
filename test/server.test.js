@@ -1,6 +1,5 @@
-// Wire-level tests. They spawn the built server because src/index.ts validates
-// the environment at import, connects a transport at the top level, and exports
-// nothing, so there is no in-process surface to assert on.
+// These drive the built server over stdio because src/index.ts validates the
+// environment at import and exports nothing, leaving no in-process surface.
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -11,7 +10,7 @@ const { spawn } = require("node:child_process");
 const SERVER = path.join(__dirname, "..", "dist", "index.js");
 const TEST_TOKEN = "st.test-only-access-token";
 
-const run = ({ status = 200, calls = [], listTools = false, env = {} }) =>
+const run = ({ status = 200, calls = [], env = {} }) =>
   new Promise((resolve, reject) => {
     const api = http.createServer((_req, res) => {
       res.writeHead(status, { "Content-Type": "application/json" });
@@ -20,8 +19,7 @@ const run = ({ status = 200, calls = [], listTools = false, env = {} }) =>
     api.on("error", reject);
 
     api.listen(0, "127.0.0.1", () => {
-      // drop the developer's own INFISICAL_* values so they cannot change what
-      // is exercised here
+      // a developer's own INFISICAL_* values must not change what is exercised
       const inherited = Object.fromEntries(
         Object.entries(process.env).filter(
           ([key]) => !key.startsWith("INFISICAL_"),
@@ -39,8 +37,7 @@ const run = ({ status = 200, calls = [], listTools = false, env = {} }) =>
         stdio: ["pipe", "pipe", "pipe"],
       });
 
-      const wanted = new Set(calls.map((_call, i) => 100 + i));
-      if (listTools) wanted.add(2);
+      const wanted = new Set([2, ...calls.map((_, i) => 100 + i)]);
 
       const responses = new Map();
       let stderr = "";
@@ -92,7 +89,7 @@ const run = ({ status = 200, calls = [], listTools = false, env = {} }) =>
         },
       });
       send({ jsonrpc: "2.0", method: "notifications/initialized" });
-      if (listTools) send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+      send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
       calls.forEach((params, i) =>
         send({ jsonrpc: "2.0", id: 100 + i, method: "tools/call", params }),
       );
@@ -119,7 +116,6 @@ test("a failed list-projects call logs only the formatted message", async () => 
 
 test("tools/list is filtered, and refused calls say why", async () => {
   const { responses, missing } = await run({
-    listTools: true,
     calls: [
       {
         name: "delete-secret",

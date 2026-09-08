@@ -90,7 +90,7 @@ const getEnvironmentVariables = () => {
         .trim()
         .optional()
         .transform((val, ctx) => {
-          // only an omitted value means every tool; an empty one is an error
+          // an empty value is an error, not "expose everything"
           if (val === undefined) return ALL_TOOLS;
 
           const requested = val
