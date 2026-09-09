@@ -42,7 +42,7 @@ jobs:
                   exit 1
                 fi
 
-            # advisory until the outstanding runtime advisories are cleared
+            # moderate and low advisories remain via @infisical/sdk, so this
+            # gates on high and above rather than everything
             - name: Audit runtime dependencies
-              run: npm audit --omit=dev
-              continue-on-error: true
+              run: npm audit --omit=dev --audit-level=high
