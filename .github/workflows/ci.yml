@@ -28,7 +28,7 @@ jobs:
                 registry-url: "https://registry.npmjs.org"
 
             - name: Install dependencies
-              run: npm install
+              run: npm ci
 
             - name: Set NPM version
               run: npm version ${{ github.ref_name }} --allow-same-version --no-git-tag-version
