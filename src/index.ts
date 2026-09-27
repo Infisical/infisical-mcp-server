@@ -26,6 +26,7 @@ enum AvailableTools {
   CreateProject = "create-project",
   CreateEnvironment = "create-environment",
   CreateFolder = "create-folder",
+  ListFolders = "list-folders",
   InviteMembersToProject = "invite-members-to-project",
   ListProjects = "list-projects",
 }
@@ -362,6 +363,7 @@ const listSecretsSchema = {
     secretPath: z.string().default("/"),
     expandSecretReferences: z.boolean().default(true),
     includeImports: z.boolean().default(true),
+    recursive: z.boolean().default(false),
   }),
   capability: {
     name: AvailableTools.ListSecrets,
@@ -397,6 +399,11 @@ const listSecretsSchema = {
         includeImports: {
           type: "boolean",
           description: "Whether to include secret imports (Defaults to true)",
+        },
+        recursive: {
+          type: "boolean",
+          description:
+            "Whether to also list secrets in all folders below the secret path, up to 20 levels deep. Each secret then includes its secretPath (Defaults to false)",
         },
       },
       required: ["projectId", "environmentSlug"],
@@ -601,6 +608,51 @@ const createFolderSchema = {
   },
 };
 
+const listFoldersSchema = {
+  zod: z.object({
+    environment: z.string(),
+    path: z.string().default("/"),
+    projectId: z.string(),
+    recursive: z.boolean().default(false),
+  }),
+  capability: {
+    name: AvailableTools.ListFolders,
+    annotations: {
+      title: "List folders",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+    },
+    description:
+      "List the folders at a path in an Infisical project environment",
+    inputSchema: {
+      type: "object",
+      properties: {
+        environment: {
+          type: "string",
+          description:
+            "The slug of the environment to list the folders from (required)",
+        },
+        path: {
+          type: "string",
+          description: "The path to list the folders from (Defaults to /)",
+        },
+        projectId: {
+          type: "string",
+          description:
+            "The ID of the project to list the folders from (required)",
+        },
+        recursive: {
+          type: "boolean",
+          description:
+            "Whether to also list all nested folders below the path. Each folder then includes its relativePath (Defaults to false)",
+        },
+      },
+      required: ["projectId", "environment"],
+    },
+  },
+};
+
 const listProjectsSchema = {
   zod: z.object({
     type: z.enum(LIST_PROJECT_TYPES).default("all"),
@@ -681,6 +733,7 @@ const allCapabilities = [
   createProjectSchema.capability,
   createEnvironmentSchema.capability,
   createFolderSchema.capability,
+  listFoldersSchema.capability,
   inviteMembersToProjectSchema.capability,
   listProjectsSchema.capability,
 ];
@@ -787,6 +840,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
         secretPath: data.secretPath,
         expandSecretReferences: data.expandSecretReferences,
         includeImports: data.includeImports,
+        recursive: data.recursive,
       });
 
       const response = {
@@ -794,6 +848,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           maskSecret({
             secretKey: secret.secretKey,
             secretValue: secret.secretValue,
+            // a recursive listing can return the same key from several folders
+            ...(data.recursive && { secretPath: secret.secretPath }),
           }),
         ),
         ...(secrets.imports && {
@@ -903,6 +959,26 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           {
             type: "text",
             text: `Folder created successfully: ${JSON.stringify(folder, null, 3)}`,
+          },
+        ],
+      };
+    }
+
+    if (name === AvailableTools.ListFolders) {
+      const data = listFoldersSchema.zod.parse(args);
+
+      const folders = await infisicalSdk.folders().listFolders({
+        environment: data.environment,
+        path: data.path,
+        projectId: data.projectId,
+        recursive: data.recursive,
+      });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Folders retrieved successfully: ${JSON.stringify(folders, null, 3)}`,
           },
         ],
       };
