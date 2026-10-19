@@ -693,6 +693,104 @@ describe("authentication", () => {
     assert.equal(logins.length, 1);
   });
 
+  // issues a distinct token per login, and once revoke() is called rejects
+  // the tokens issued so far, as Infisical does once a token is revoked or
+  // runs out of uses
+  const revocableTokens = () => {
+    const issued = [];
+    const revoked = new Set();
+    return {
+      revoke: () => issued.forEach((token) => revoked.add(token)),
+      respond: (request) => {
+        if (request.path === "/api/v1/auth/universal-auth/login") {
+          const token = `${accessToken(3600)}.${issued.length}`;
+          issued.push(token);
+          return [200, { accessToken: token, expiresIn: 3600 }];
+        }
+        if (revoked.has(request.authorization?.replace("Bearer ", ""))) {
+          return [401, { message: "Token revoked" }];
+        }
+      },
+    };
+  };
+
+  const countLogins = (api) =>
+    api.requests.filter((request) => request.path.includes("/auth/")).length;
+
+  test("logs in again when Infisical rejects the token, and retries the read", async (t) => {
+    const tokens = revocableTokens();
+    const { call, api, secretRequests } = await setup(t, { respond: tokens.respond });
+
+    await call("list-secrets", SECRET_LOCATION);
+    tokens.revoke();
+    const text = await call("get-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" });
+
+    assert.equal(parseResponse(text).secretKey, "DB_PASSWORD");
+    assert.equal(countLogins(api), 2);
+    // the list, the refused get, and the get retried with the new token
+    assert.equal(secretRequests().length, 3);
+  });
+
+  test("retries a write the SDK reports as unauthorized", async (t) => {
+    const tokens = revocableTokens();
+    const { call, api, secretRequests } = await setup(t, {
+      env: ALL_TOOLS,
+      respond: tokens.respond,
+    });
+
+    await call("list-secrets", SECRET_LOCATION);
+    tokens.revoke();
+    const text = await call("create-secret", {
+      ...SECRET_LOCATION,
+      secretName: "NEW_KEY",
+      secretValue: SECRET_VALUE,
+    });
+
+    assert.match(text, /Secret created successfully/);
+    assert.equal(countLogins(api), 2);
+    const creates = secretRequests().filter((request) => request.method === "POST");
+    assert.equal(creates.length, 2);
+  });
+
+  test("gives up when the new token is rejected too", async (t) => {
+    const { call, api } = await setup(t, {
+      respond: ({ path }) =>
+        path.startsWith("/api/v3/secrets") ? [401, { message: "Token revoked" }] : undefined,
+    });
+
+    await assert.rejects(call("list-secrets", SECRET_LOCATION), /401: Token revoked/);
+    // the first call's own login, and no retry, since its token was fresh
+    assert.equal(countLogins(api), 1);
+
+    await assert.rejects(call("list-secrets", SECRET_LOCATION), /401: Token revoked/);
+    // one more login for the retry, then it gives up
+    assert.equal(countLogins(api), 2);
+  });
+
+  test("does not log in twice when the login itself is refused", async (t) => {
+    const { call, api } = await setup(t, {
+      respond: ({ path }) =>
+        path.includes("/auth/") ? [401, { message: "Invalid credentials" }] : undefined,
+    });
+
+    await assert.rejects(call("list-secrets", SECRET_LOCATION), /Invalid credentials/);
+    assert.equal(countLogins(api), 1);
+  });
+
+  test("does not retry a rejected access token it cannot renew", async (t) => {
+    let expired = false;
+    const { call, api } = await setup(t, {
+      env: { INFISICAL_AUTH_METHOD: "access-token", INFISICAL_TOKEN: "configured-token" },
+      respond: () => (expired ? [401, { message: "Token expired" }] : undefined),
+    });
+
+    await call("list-secrets", SECRET_LOCATION);
+    expired = true;
+    await assert.rejects(call("list-secrets", SECRET_LOCATION), /401: Token expired/);
+
+    assert.equal(api.requests.length, 2);
+  });
+
   test("uses a configured access token without logging in", async (t) => {
     const { call, api } = await setup(t, {
       env: { INFISICAL_AUTH_METHOD: "access-token", INFISICAL_TOKEN: "configured-token" },

@@ -224,6 +224,23 @@ const API_TIMEOUT_MS = 10 * 1000;
 const API_MAX_RETRIES = 4;
 const API_RETRY_DELAY_MS = 1000;
 
+class ApiRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+  }
+}
+
+// the SDK's errors only carry the status in their message: [StatusCode=401]
+// when the response had a message, axios's own wording when it did not
+const isUnauthorized = (err: unknown) =>
+  err instanceof ApiRequestError
+    ? err.status === 401
+    : err instanceof Error &&
+      /\[StatusCode=401\]|status code 401\b/.test(err.message);
+
 type LogEntry = Record<string, unknown>;
 
 // stdout carries the MCP protocol, so logs go to stderr, one JSON object per line
@@ -763,11 +780,14 @@ export const createServer = (
   let isAuthenticated = false;
   let renewLoginAt: number | undefined;
   let pendingLogin: Promise<void> | undefined;
+  let loginAttempts = 0;
   const infisicalSdk = new InfisicalSDK({
     siteUrl: env.INFISICAL_HOST_URL,
   });
 
   const logIn = async () => {
+    loginAttempts++;
+
     switch (env.INFISICAL_AUTH_METHOD) {
       case InfisicalAuthMethod.UniversalAuth: {
         const requestedAt = Date.now();
@@ -871,12 +891,13 @@ export const createServer = (
 
         // rethrow a plain error, since an axios error carries the request
         // config and the bearer token with it
-        const apiMessage = (err.response?.data as { message?: string })
+        if (!err.response) throw new Error(err.message);
+
+        const apiMessage = (err.response.data as { message?: string })
           ?.message;
-        throw new Error(
-          err.response
-            ? `Infisical API returned ${err.response.status}: ${apiMessage ?? err.message}`
-            : err.message,
+        throw new ApiRequestError(
+          `Infisical API returned ${err.response.status}: ${apiMessage ?? err.message}`,
+          err.response.status,
         );
       }
     }
@@ -1211,6 +1232,30 @@ export const createServer = (
     }
   };
 
+  // a universal auth token Infisical rejects, because it was revoked or ran
+  // out of uses, is replaced by logging in again, once. a 401 means the call
+  // was refused before it did anything, so repeating it is safe. a token from
+  // a login made during this call is not retried, since that would not help
+  const callToolWithRelogin = async (
+    req: CallToolRequest,
+    signal: AbortSignal,
+  ) => {
+    const attemptsBefore = loginAttempts;
+
+    try {
+      return await callTool(req, signal);
+    } catch (err) {
+      const canLogInAgain =
+        env.INFISICAL_AUTH_METHOD === InfisicalAuthMethod.UniversalAuth &&
+        loginAttempts === attemptsBefore;
+
+      if (!canLogInAgain || !isUnauthorized(err)) throw err;
+
+      isAuthenticated = false;
+      return callTool(req, signal);
+    }
+  };
+
   // the client ID names the machine identity; the client secret is never logged
   const actor = {
     authMethod: env.INFISICAL_AUTH_METHOD,
@@ -1241,7 +1286,7 @@ export const createServer = (
     };
 
     try {
-      const result = await callTool(req, extra.signal);
+      const result = await callToolWithRelogin(req, extra.signal);
       audit("success");
       return result;
     } catch (err) {
