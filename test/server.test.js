@@ -196,6 +196,14 @@ const setup = async (t, { env = {}, respond, options = {} } = {}) => {
 
   const call = async (name, args) => {
     const result = await client.callTool({ name, arguments: args });
+    assert.ok(!result.isError, `${name} failed: ${result.content[0].text}`);
+    return result.content[0].text;
+  };
+
+  // a tool that fails while running returns a result with isError set
+  const callError = async (name, args) => {
+    const result = await client.callTool({ name, arguments: args });
+    assert.equal(result.isError, true, `${name} was expected to fail`);
     return result.content[0].text;
   };
 
@@ -203,7 +211,7 @@ const setup = async (t, { env = {}, respond, options = {} } = {}) => {
   const secretRequests = () =>
     api.requests.filter((request) => !request.path.includes("/auth/"));
 
-  return { client, api, logs, call, secretRequests };
+  return { client, api, logs, call, callError, secretRequests };
 };
 
 // the JSON a tool response carries after its leading sentence
@@ -282,12 +290,19 @@ describe("tool gating", () => {
     assert.ok(tools.every((tool) => tool.annotations.readOnlyHint));
   });
 
+  // both are protocol errors rather than failed results, as the MCP spec asks
+  const INVALID_PARAMS = -32602;
+
   test("refuses a disabled tool before authenticating", async (t) => {
     const { call, api, logs } = await setup(t);
 
     await assert.rejects(
       call("delete-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" }),
-      /not enabled on this server.*Add it to INFISICAL_ENABLED_TOOLS/,
+      (err) => {
+        assert.equal(err.code, INVALID_PARAMS);
+        assert.match(err.message, /not enabled on this server.*Add it to INFISICAL_ENABLED_TOOLS/);
+        return true;
+      },
     );
     assert.equal(api.requests.length, 0);
     assert.equal(logs[0].outcome, "denied");
@@ -296,7 +311,11 @@ describe("tool gating", () => {
   test("refuses an unknown tool", async (t) => {
     const { call, api } = await setup(t, { env: ALL_TOOLS });
 
-    await assert.rejects(call("read-minds", {}), /Unrecognized tool name: read-minds/);
+    await assert.rejects(call("read-minds", {}), (err) => {
+      assert.equal(err.code, INVALID_PARAMS);
+      assert.match(err.message, /Unrecognized tool name: read-minds/);
+      return true;
+    });
     assert.equal(api.requests.length, 0);
   });
 });
@@ -460,10 +479,10 @@ describe("projects, environments, folders and members", () => {
   });
 
   test("create-project rejects a type the API does not have", async (t) => {
-    const { call, secretRequests } = await setup(t, { env: ALL_TOOLS });
+    const { callError, secretRequests } = await setup(t, { env: ALL_TOOLS });
 
-    await assert.rejects(
-      call("create-project", { projectName: "Billing", type: "everything" }),
+    assert.match(
+      await callError("create-project", { projectName: "Billing", type: "everything" }),
       /Invalid arguments: type/,
     );
     assert.equal(secretRequests().length, 0);
@@ -509,45 +528,41 @@ describe("projects, environments, folders and members", () => {
 
 describe("errors", () => {
   test("surfaces an API refusal as a tool error with the API's message", async (t) => {
-    const { call, logs } = await setup(t, {
+    const { callError, logs } = await setup(t, {
       respond: ({ path }) =>
         path.startsWith("/api/v3/secrets/raw")
           ? [403, { message: "You are not allowed to read secrets in dev" }]
           : undefined,
     });
 
-    await assert.rejects(
-      call("get-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" }),
-      (err) => {
-        assert.match(err.message, /Infisical API returned 403: You are not allowed to read secrets in dev/);
-        assert.ok(!err.message.includes("Bearer"));
-        return true;
-      },
-    );
+    const text = await callError("get-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" });
+
+    assert.match(text, /Infisical API returned 403: You are not allowed to read secrets in dev/);
+    assert.ok(!text.includes("Bearer"));
     assert.equal(logs[0].outcome, "error");
   });
 
   test("surfaces a list-projects failure as a tool error", async (t) => {
-    const { call } = await setup(t, {
+    const { callError } = await setup(t, {
       respond: ({ path }) =>
         path === "/api/v1/workspace" ? [500, { message: "Something broke" }] : undefined,
     });
 
-    await assert.rejects(call("list-projects", {}), /Infisical API returned 500: Something broke/);
+    assert.match(await callError("list-projects", {}), /Infisical API returned 500: Something broke/);
   });
 
   test("rejects invalid arguments before calling the API", async (t) => {
-    const { call, secretRequests } = await setup(t);
+    const { callError, secretRequests } = await setup(t);
 
-    await assert.rejects(
-      call("get-secret", { environmentSlug: "dev", secretName: "DB_PASSWORD" }),
+    assert.match(
+      await callError("get-secret", { environmentSlug: "dev", secretName: "DB_PASSWORD" }),
       /Invalid arguments: projectId: Required/,
     );
     assert.equal(secretRequests().length, 0);
   });
 
   test("does not echo a submitted value when a write fails", async (t) => {
-    const { call, logs } = await setup(t, {
+    const { callError, logs } = await setup(t, {
       env: ALL_TOOLS,
       respond: ({ method, path }) =>
         method === "POST" && path.startsWith("/api/v3/secrets/raw/")
@@ -555,14 +570,14 @@ describe("errors", () => {
           : undefined,
     });
 
-    await assert.rejects(
-      call("create-secret", { ...SECRET_LOCATION, secretName: "NEW_KEY", secretValue: SECRET_VALUE }),
-      (err) => {
-        assert.match(err.message, /Secret already exist/);
-        assert.ok(!err.message.includes(SECRET_VALUE));
-        return true;
-      },
-    );
+    const text = await callError("create-secret", {
+      ...SECRET_LOCATION,
+      secretName: "NEW_KEY",
+      secretValue: SECRET_VALUE,
+    });
+
+    assert.match(text, /Secret already exist/);
+    assert.ok(!text.includes(SECRET_VALUE));
     assert.ok(!JSON.stringify(logs).includes(SECRET_VALUE));
   });
 });
@@ -588,24 +603,24 @@ describe("requests to Infisical", () => {
   });
 
   test("gives up on a read that never answers", async (t) => {
-    const { call, secretRequests } = await setup(t, {
+    const { callError, secretRequests } = await setup(t, {
       options: FAST,
       respond: (request) => (isListRequest(request) ? HANG : undefined),
     });
 
-    await assert.rejects(call("list-secrets", SECRET_LOCATION), /timeout of 50ms exceeded/);
+    assert.match(await callError("list-secrets", SECRET_LOCATION), /timeout of 50ms exceeded/);
     // the first attempt and four retries
     assert.equal(secretRequests().length, 5);
   });
 
   test("does not retry a read Infisical refused", async (t) => {
-    const { call, secretRequests } = await setup(t, {
+    const { callError, secretRequests } = await setup(t, {
       options: FAST,
       respond: (request) =>
         isListRequest(request) ? [403, { message: "Forbidden" }] : undefined,
     });
 
-    await assert.rejects(call("list-secrets", SECRET_LOCATION), /403: Forbidden/);
+    assert.match(await callError("list-secrets", SECRET_LOCATION), /403: Forbidden/);
     assert.equal(secretRequests().length, 1);
   });
 
@@ -761,40 +776,40 @@ describe("authentication", () => {
   });
 
   test("gives up when the new token is rejected too", async (t) => {
-    const { call, api } = await setup(t, {
+    const { callError, api } = await setup(t, {
       respond: ({ path }) =>
         path.startsWith("/api/v3/secrets") ? [401, { message: "Token revoked" }] : undefined,
     });
 
-    await assert.rejects(call("list-secrets", SECRET_LOCATION), /401: Token revoked/);
+    assert.match(await callError("list-secrets", SECRET_LOCATION), /401: Token revoked/);
     // the first call's own login, and no retry, since its token was fresh
     assert.equal(countLogins(api), 1);
 
-    await assert.rejects(call("list-secrets", SECRET_LOCATION), /401: Token revoked/);
+    assert.match(await callError("list-secrets", SECRET_LOCATION), /401: Token revoked/);
     // one more login for the retry, then it gives up
     assert.equal(countLogins(api), 2);
   });
 
   test("does not log in twice when the login itself is refused", async (t) => {
-    const { call, api } = await setup(t, {
+    const { callError, api } = await setup(t, {
       respond: ({ path }) =>
         path.includes("/auth/") ? [401, { message: "Invalid credentials" }] : undefined,
     });
 
-    await assert.rejects(call("list-secrets", SECRET_LOCATION), /Invalid credentials/);
+    assert.match(await callError("list-secrets", SECRET_LOCATION), /Invalid credentials/);
     assert.equal(countLogins(api), 1);
   });
 
   test("does not retry a rejected access token it cannot renew", async (t) => {
     let expired = false;
-    const { call, api } = await setup(t, {
+    const { call, callError, api } = await setup(t, {
       env: { INFISICAL_AUTH_METHOD: "access-token", INFISICAL_TOKEN: "configured-token" },
       respond: () => (expired ? [401, { message: "Token expired" }] : undefined),
     });
 
     await call("list-secrets", SECRET_LOCATION);
     expired = true;
-    await assert.rejects(call("list-secrets", SECRET_LOCATION), /401: Token expired/);
+    assert.match(await callError("list-secrets", SECRET_LOCATION), /401: Token expired/);
 
     assert.equal(api.requests.length, 2);
   });

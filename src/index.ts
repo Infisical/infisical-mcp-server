@@ -13,7 +13,9 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   type CallToolRequest,
   CallToolRequestSchema,
+  ErrorCode,
   ListToolsRequestSchema,
+  McpError,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
@@ -226,7 +228,11 @@ const API_MAX_RETRIES = 4;
 const API_RETRY_DELAY_MS = 1000;
 
 // lets the audit log tell a disabled tool apart from other failures
-class ToolNotEnabledError extends Error {}
+class ToolNotEnabledError extends McpError {
+  constructor(message: string) {
+    super(ErrorCode.InvalidParams, message);
+  }
+}
 
 class ApiRequestError extends Error {
   constructor(
@@ -953,7 +959,10 @@ export const createServer = (
       const { name, arguments: args } = req.params;
 
       if (!ALL_TOOLS.includes(name as AvailableTools)) {
-        throw new Error(`Unrecognized tool name: ${name}`);
+        throw new McpError(
+          ErrorCode.InvalidParams,
+          `Unrecognized tool name: ${name}`,
+        );
       }
 
       // gate before authenticating so a disabled tool never touches credentials
@@ -1301,11 +1310,21 @@ export const createServer = (
       audit("success");
       return result;
     } catch (err) {
-      audit(
-        err instanceof ToolNotEnabledError ? "denied" : "error",
-        (err as Error).message,
-      );
-      throw err;
+      const message = (err as Error).message;
+
+      // an unknown or disabled tool is a protocol error, as the MCP spec
+      // asks. a failure while running a tool comes back as a result with
+      // isError set, so the model sees the reason and can act on it
+      if (err instanceof McpError) {
+        audit(err instanceof ToolNotEnabledError ? "denied" : "error", message);
+        throw err;
+      }
+
+      audit("error", message);
+      return {
+        isError: true,
+        content: [{ type: "text", text: message }],
+      };
     }
   });
 
