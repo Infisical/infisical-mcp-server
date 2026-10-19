@@ -1,0 +1,630 @@
+// Each test connects an MCP client to a server built from dist/index.js over
+// an in-memory transport, with a fake Infisical API on localhost behind it.
+// The real SDK and HTTP client run, so the requests asserted here are the
+// ones Infisical would receive. `npm test` builds first.
+
+const { describe, test } = require("node:test");
+const assert = require("node:assert/strict");
+const http = require("node:http");
+const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
+const { InMemoryTransport } = require("@modelcontextprotocol/sdk/inMemory.js");
+const { createServer, getEnvironmentVariables } = require("../dist/index.js");
+
+const SECRET_VALUE = "s3cr3t-value";
+const CLIENT_SECRET = "universal-auth-client-secret";
+const MASKED_VALUE = "<masked>";
+const READ_ONLY_TOOLS = ["list-secrets", "get-secret", "list-projects"];
+
+// an unsigned JWT; the server only reads exp from it
+const accessToken = (ttlSeconds) =>
+  [
+    Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url"),
+    Buffer.from(
+      JSON.stringify({ exp: Math.floor(Date.now() / 1000) + ttlSeconds }),
+    ).toString("base64url"),
+    "signature",
+  ].join(".");
+
+const fakeSecret = (secretKey, query) => {
+  const hidden = query.viewSecretValue === "false";
+  return {
+    secretKey,
+    secretValue: hidden ? "<hidden-by-infisical>" : SECRET_VALUE,
+    secretValueHidden: hidden,
+  };
+};
+
+const defaultResponse = ({ method, path, query, body }) => {
+  if (method === "POST" && path === "/api/v1/auth/universal-auth/login") {
+    return [200, { accessToken: accessToken(3600), expiresIn: 3600 }];
+  }
+
+  if (method === "GET" && path === "/api/v3/secrets/raw") {
+    return [
+      200,
+      {
+        secrets: [fakeSecret("DB_PASSWORD", query)],
+        ...(query.include_imports === "true" && {
+          imports: [
+            {
+              secretPath: "/shared",
+              environment: "dev",
+              secrets: [fakeSecret("SHARED_KEY", query)],
+            },
+          ],
+        }),
+      },
+    ];
+  }
+
+  const secretRoute = path.match(/^\/api\/v3\/secrets\/raw\/(.+)$/);
+  if (secretRoute) {
+    const secretKey = decodeURIComponent(secretRoute[1]);
+    switch (method) {
+      case "GET":
+        return [200, { secret: fakeSecret(secretKey, query) }];
+      case "POST":
+        return [200, { secret: { secretKey, secretValue: body.secretValue } }];
+      case "PATCH":
+        return [
+          200,
+          {
+            secret: {
+              secretKey: body.newSecretName ?? secretKey,
+              secretValue: body.secretValue ?? SECRET_VALUE,
+            },
+          },
+        ];
+      case "DELETE":
+        return [200, { secret: { secretKey } }];
+    }
+  }
+
+  if (method === "GET" && path === "/api/v1/workspace") {
+    return [
+      200,
+      {
+        workspaces: [
+          {
+            id: "project-1",
+            name: "Payments",
+            slug: "payments",
+            orgId: "org-1",
+            type: "secret-manager",
+            hasDeleteProtection: false,
+            environments: [{ id: "env-1", name: "Development", slug: "dev" }],
+          },
+        ],
+      },
+    ];
+  }
+
+  if (method === "POST" && path === "/api/v2/workspace") {
+    return [200, { project: { id: "project-2", name: body.projectName } }];
+  }
+
+  if (method === "POST" && /^\/api\/v1\/workspace\/[^/]+\/environments$/.test(path)) {
+    return [200, { environment: { id: "env-2", name: body.name, slug: body.slug } }];
+  }
+
+  if (method === "POST" && path === "/api/v1/folders") {
+    return [200, { folder: { id: "folder-1", name: body.name } }];
+  }
+
+  if (method === "POST" && /^\/api\/v2\/workspace\/[^/]+\/memberships$/.test(path)) {
+    return [200, { memberships: [{ id: "membership-1" }] }];
+  }
+
+  return [404, { message: `No fake route for ${method} ${path}` }];
+};
+
+// `respond` can answer a request itself, or return undefined to fall through
+const startApi = async (respond) => {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      const url = new URL(req.url, "http://localhost");
+      const request = {
+        method: req.method,
+        path: url.pathname,
+        query: Object.fromEntries(url.searchParams),
+        body: raw ? JSON.parse(raw) : undefined,
+        authorization: req.headers.authorization,
+      };
+      requests.push(request);
+
+      const [status, payload] =
+        respond?.(request) ?? defaultResponse(request);
+      res.writeHead(status, { "content-type": "application/json" });
+      res.end(JSON.stringify(payload));
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  return {
+    url: `http://127.0.0.1:${server.address().port}`,
+    requests,
+    close: () => {
+      server.closeAllConnections();
+      return new Promise((resolve) => server.close(resolve));
+    },
+  };
+};
+
+const setup = async (t, { env = {}, respond } = {}) => {
+  const api = await startApi(respond);
+  t.after(() => api.close());
+
+  const logs = [];
+  const server = createServer(
+    getEnvironmentVariables({
+      INFISICAL_HOST_URL: api.url,
+      INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: "universal-auth-client-id",
+      INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: CLIENT_SECRET,
+      ...env,
+    }),
+    { log: (entry) => logs.push(entry) },
+  );
+
+  const client = new Client({ name: "test-client", version: "1.0.0" });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  await Promise.all([
+    server.connect(serverTransport),
+    client.connect(clientTransport),
+  ]);
+  t.after(() => client.close());
+
+  const call = async (name, args) => {
+    const result = await client.callTool({ name, arguments: args });
+    return result.content[0].text;
+  };
+
+  // requests past the login, which every first call makes
+  const secretRequests = () =>
+    api.requests.filter((request) => !request.path.includes("/auth/"));
+
+  return { client, api, logs, call, secretRequests };
+};
+
+// the JSON a tool response carries after its leading sentence
+const parseResponse = (text) => JSON.parse(text.slice(text.indexOf("{")));
+
+const ALL_TOOLS = { INFISICAL_ENABLED_TOOLS: "all" };
+const UNMASKED = { INFISICAL_MASK_SECRET_VALUES: "false" };
+const SECRET_LOCATION = { projectId: "project-1", environmentSlug: "dev" };
+
+describe("configuration", () => {
+  const parse = (env) =>
+    getEnvironmentVariables({
+      INFISICAL_AUTH_METHOD: "access-token",
+      INFISICAL_TOKEN: "token",
+      ...env,
+    });
+
+  test("defaults to the read-only tools, masked values and an audit log", () => {
+    const env = parse({});
+    assert.deepEqual([...env.INFISICAL_ENABLED_TOOLS].sort(), [...READ_ONLY_TOOLS].sort());
+    assert.equal(env.INFISICAL_MASK_SECRET_VALUES, true);
+    assert.equal(env.INFISICAL_AUDIT_LOG, true);
+  });
+
+  test("treats a blank masking value as unset, so values stay masked", () => {
+    assert.equal(parse({ INFISICAL_MASK_SECRET_VALUES: " " }).INFISICAL_MASK_SECRET_VALUES, true);
+    assert.equal(parse({ INFISICAL_MASK_SECRET_VALUES: "FALSE" }).INFISICAL_MASK_SECRET_VALUES, false);
+  });
+
+  test("exposes every tool for all", () => {
+    assert.equal(parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length, 10);
+  });
+
+  for (const [description, env, message] of [
+    ["an unknown tool", { INFISICAL_ENABLED_TOOLS: "get-secret,read-minds" }, /unknown tool\(s\): read-minds/],
+    ["an empty tool list", { INFISICAL_ENABLED_TOOLS: " , " }, /lists no tools/],
+    ["all mixed with names", { INFISICAL_ENABLED_TOOLS: "all,get-secret" }, /not both/],
+    ["a masking value that is not a boolean", { INFISICAL_MASK_SECRET_VALUES: "yes" }, /must be "true" or "false"/],
+    ["token auth without a token", { INFISICAL_TOKEN: undefined }, /INFISICAL_TOKEN is not set/],
+    ["universal auth without a client secret", { INFISICAL_AUTH_METHOD: "universal-auth", INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: "id" }, /CLIENT_SECRET is not set/],
+  ]) {
+    test(`refuses to start with ${description}`, () => {
+      assert.throws(
+        () => parse(env),
+        (err) => err.errors.some((issue) => message.test(issue.message)),
+      );
+    });
+  }
+});
+
+describe("tool gating", () => {
+  test("lists only the enabled tools", async (t) => {
+    const { client } = await setup(t, {
+      env: { INFISICAL_ENABLED_TOOLS: "get-secret,delete-secret" },
+    });
+
+    const { tools } = await client.listTools();
+    assert.deepEqual(tools.map((tool) => tool.name).sort(), ["delete-secret", "get-secret"]);
+    const deleteSecret = tools.find((tool) => tool.name === "delete-secret");
+    assert.equal(deleteSecret.annotations.destructiveHint, true);
+  });
+
+  test("lists only tools that read by default", async (t) => {
+    const { client } = await setup(t);
+
+    const { tools } = await client.listTools();
+    assert.deepEqual(tools.map((tool) => tool.name).sort(), [...READ_ONLY_TOOLS].sort());
+    assert.ok(tools.every((tool) => tool.annotations.readOnlyHint));
+  });
+
+  test("refuses a disabled tool before authenticating", async (t) => {
+    const { call, api, logs } = await setup(t);
+
+    await assert.rejects(
+      call("delete-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" }),
+      /not enabled on this server.*Add it to INFISICAL_ENABLED_TOOLS/,
+    );
+    assert.equal(api.requests.length, 0);
+    assert.equal(logs[0].outcome, "denied");
+  });
+
+  test("refuses an unknown tool", async (t) => {
+    const { call, api } = await setup(t, { env: ALL_TOOLS });
+
+    await assert.rejects(call("read-minds", {}), /Unrecognized tool name: read-minds/);
+    assert.equal(api.requests.length, 0);
+  });
+});
+
+describe("reading secrets", () => {
+  test("list-secrets masks values and asks Infisical not to send them", async (t) => {
+    const { call, secretRequests } = await setup(t);
+
+    const text = await call("list-secrets", SECRET_LOCATION);
+
+    const [request] = secretRequests();
+    assert.equal(request.query.viewSecretValue, "false");
+    assert.equal(request.query.workspaceId, "project-1");
+    assert.equal(request.query.environment, "dev");
+    assert.equal(request.query.secretPath, "/");
+
+    const response = JSON.parse(text);
+    assert.deepEqual(response.secrets, [{ secretKey: "DB_PASSWORD", secretValue: MASKED_VALUE }]);
+    assert.deepEqual(response.imports[0].secrets, [{ secretKey: "SHARED_KEY", secretValue: MASKED_VALUE }]);
+    assert.ok(!text.includes("hidden-by-infisical"));
+  });
+
+  test("list-secrets returns imports, using the parameter name the API reads", async (t) => {
+    const { call, secretRequests } = await setup(t);
+
+    const response = JSON.parse(await call("list-secrets", SECRET_LOCATION));
+
+    assert.equal(secretRequests()[0].query.include_imports, "true");
+    assert.equal(response.imports[0].secretPath, "/shared");
+  });
+
+  test("list-secrets returns values when masking is off", async (t) => {
+    const { call, secretRequests } = await setup(t, { env: UNMASKED });
+
+    const response = JSON.parse(await call("list-secrets", SECRET_LOCATION));
+
+    assert.equal(secretRequests()[0].query.viewSecretValue, "true");
+    assert.equal(response.secrets[0].secretValue, SECRET_VALUE);
+    assert.equal(response.imports[0].secrets[0].secretValue, SECRET_VALUE);
+  });
+
+  test("get-secret masks the value and passes its options through", async (t) => {
+    const { call, secretRequests } = await setup(t);
+
+    const text = await call("get-secret", {
+      ...SECRET_LOCATION,
+      secretName: "API KEY",
+      secretPath: "/backend",
+      includeImports: false,
+      expandSecretReferences: false,
+    });
+
+    const [request] = secretRequests();
+    assert.equal(request.path, "/api/v3/secrets/raw/API%20KEY");
+    assert.equal(request.query.include_imports, "false");
+    assert.equal(request.query.expandSecretReferences, "false");
+    assert.equal(request.query.secretPath, "/backend");
+    assert.equal(request.query.viewSecretValue, "false");
+    assert.equal(parseResponse(text).secretValue, MASKED_VALUE);
+  });
+
+  test("get-secret returns the value when masking is off", async (t) => {
+    const { call } = await setup(t, { env: UNMASKED });
+
+    const text = await call("get-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" });
+
+    assert.equal(parseResponse(text).secretValue, SECRET_VALUE);
+  });
+});
+
+describe("writing secrets", () => {
+  test("create-secret stores the value and masks it in the response", async (t) => {
+    const { call, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    const text = await call("create-secret", {
+      ...SECRET_LOCATION,
+      secretName: "NEW_KEY",
+      secretValue: SECRET_VALUE,
+    });
+
+    const [request] = secretRequests();
+    assert.equal(request.method, "POST");
+    assert.equal(request.path, "/api/v3/secrets/raw/NEW_KEY");
+    assert.equal(request.body.secretValue, SECRET_VALUE);
+    assert.equal(request.body.workspaceId, "project-1");
+    assert.equal(parseResponse(text).secretValue, MASKED_VALUE);
+    assert.ok(!text.includes(SECRET_VALUE));
+  });
+
+  test("update-secret renames a secret without touching its value", async (t) => {
+    const { call, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    await call("update-secret", {
+      ...SECRET_LOCATION,
+      secretName: "OLD_NAME",
+      newSecretName: "NEW_NAME",
+    });
+
+    const [request] = secretRequests();
+    assert.equal(request.method, "PATCH");
+    assert.equal(request.path, "/api/v3/secrets/raw/OLD_NAME");
+    assert.equal(request.body.newSecretName, "NEW_NAME");
+    assert.ok(!("secretValue" in request.body));
+  });
+
+  test("update-secret sends a new value and masks it in the response", async (t) => {
+    const { call, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    const text = await call("update-secret", {
+      ...SECRET_LOCATION,
+      secretName: "DB_PASSWORD",
+      secretValue: "rotated-value",
+    });
+
+    assert.equal(secretRequests()[0].body.secretValue, "rotated-value");
+    assert.equal(parseResponse(text).secretValue, MASKED_VALUE);
+  });
+
+  test("delete-secret deletes the named secret", async (t) => {
+    const { call, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    const text = await call("delete-secret", {
+      ...SECRET_LOCATION,
+      secretName: "DB_PASSWORD",
+      secretPath: "/backend",
+    });
+
+    const [request] = secretRequests();
+    assert.equal(request.method, "DELETE");
+    assert.equal(request.path, "/api/v3/secrets/raw/DB_PASSWORD");
+    assert.equal(request.body.secretPath, "/backend");
+    assert.equal(text, "Secret deleted successfully: DB_PASSWORD");
+  });
+});
+
+describe("projects, environments, folders and members", () => {
+  test("list-projects filters by type, and omits the filter for all", async (t) => {
+    const { call, secretRequests } = await setup(t);
+
+    const text = await call("list-projects", { type: "kms" });
+    await call("list-projects", {});
+
+    const [filtered, unfiltered] = secretRequests();
+    assert.equal(filtered.query.type, "kms");
+    assert.ok(!("type" in unfiltered.query));
+    const projects = JSON.parse(text.slice(text.indexOf("[")));
+    assert.equal(projects[0].slug, "payments");
+    assert.equal(projects[0].environments[0].slug, "dev");
+  });
+
+  test("create-project sends the project details", async (t) => {
+    const { call, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    await call("create-project", { projectName: "Billing", type: "secret-manager", slug: "billing" });
+
+    const [request] = secretRequests();
+    assert.equal(request.path, "/api/v2/workspace");
+    assert.equal(request.body.projectName, "Billing");
+    assert.equal(request.body.type, "secret-manager");
+    assert.equal(request.body.slug, "billing");
+  });
+
+  test("create-project rejects a type the API does not have", async (t) => {
+    const { call, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    await assert.rejects(
+      call("create-project", { projectName: "Billing", type: "everything" }),
+      /Invalid arguments: type/,
+    );
+    assert.equal(secretRequests().length, 0);
+  });
+
+  test("create-environment creates it in the given project", async (t) => {
+    const { call, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    await call("create-environment", { projectId: "project-1", name: "Staging", slug: "staging" });
+
+    const [request] = secretRequests();
+    assert.equal(request.path, "/api/v1/workspace/project-1/environments");
+    assert.equal(request.body.slug, "staging");
+  });
+
+  test("create-folder creates it at the given path", async (t) => {
+    const { call, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    await call("create-folder", { projectId: "project-1", environment: "dev", name: "backend", path: "/apps" });
+
+    const [request] = secretRequests();
+    assert.equal(request.path, "/api/v1/folders");
+    assert.equal(request.body.workspaceId, "project-1");
+    assert.equal(request.body.path, "/apps");
+    assert.equal(request.body.name, "backend");
+  });
+
+  test("invite-members-to-project invites with the given roles", async (t) => {
+    const { call, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    await call("invite-members-to-project", {
+      projectId: "project-1",
+      emails: ["dev@example.com"],
+      roleSlugs: ["viewer"],
+    });
+
+    const [request] = secretRequests();
+    assert.equal(request.path, "/api/v2/workspace/project-1/memberships");
+    assert.deepEqual(request.body.emails, ["dev@example.com"]);
+    assert.deepEqual(request.body.roleSlugs, ["viewer"]);
+  });
+});
+
+describe("errors", () => {
+  test("surfaces an API refusal as a tool error with the API's message", async (t) => {
+    const { call, logs } = await setup(t, {
+      respond: ({ path }) =>
+        path.startsWith("/api/v3/secrets/raw")
+          ? [403, { message: "You are not allowed to read secrets in dev" }]
+          : undefined,
+    });
+
+    await assert.rejects(
+      call("get-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" }),
+      (err) => {
+        assert.match(err.message, /Infisical API returned 403: You are not allowed to read secrets in dev/);
+        assert.ok(!err.message.includes("Bearer"));
+        return true;
+      },
+    );
+    assert.equal(logs[0].outcome, "error");
+  });
+
+  test("surfaces a list-projects failure as a tool error", async (t) => {
+    const { call } = await setup(t, {
+      respond: ({ path }) =>
+        path === "/api/v1/workspace" ? [500, { message: "Something broke" }] : undefined,
+    });
+
+    await assert.rejects(call("list-projects", {}), /Infisical API returned 500: Something broke/);
+  });
+
+  test("rejects invalid arguments before calling the API", async (t) => {
+    const { call, secretRequests } = await setup(t);
+
+    await assert.rejects(
+      call("get-secret", { environmentSlug: "dev", secretName: "DB_PASSWORD" }),
+      /Invalid arguments: projectId: Required/,
+    );
+    assert.equal(secretRequests().length, 0);
+  });
+
+  test("does not echo a submitted value when a write fails", async (t) => {
+    const { call, logs } = await setup(t, {
+      env: ALL_TOOLS,
+      respond: ({ method, path }) =>
+        method === "POST" && path.startsWith("/api/v3/secrets/raw/")
+          ? [400, { message: "Secret already exist" }]
+          : undefined,
+    });
+
+    await assert.rejects(
+      call("create-secret", { ...SECRET_LOCATION, secretName: "NEW_KEY", secretValue: SECRET_VALUE }),
+      (err) => {
+        assert.match(err.message, /Secret already exist/);
+        assert.ok(!err.message.includes(SECRET_VALUE));
+        return true;
+      },
+    );
+    assert.ok(!JSON.stringify(logs).includes(SECRET_VALUE));
+  });
+});
+
+describe("authentication", () => {
+  test("logs in once and sends the token on every request", async (t) => {
+    const { call, api } = await setup(t);
+
+    await call("list-secrets", SECRET_LOCATION);
+    await call("get-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" });
+    await call("list-projects", {});
+
+    const logins = api.requests.filter((request) => request.path.includes("/auth/"));
+    assert.equal(logins.length, 1);
+    assert.equal(logins[0].body.clientSecret, CLIENT_SECRET);
+
+    const [, ...calls] = api.requests;
+    assert.equal(calls.length, 3);
+    assert.ok(calls.every((request) => /^Bearer .+\..+\..+$/.test(request.authorization)));
+  });
+
+  test("logs in again when the token is about to expire", async (t) => {
+    const { call, api } = await setup(t, {
+      respond: ({ path }) =>
+        path === "/api/v1/auth/universal-auth/login"
+          ? [200, { accessToken: accessToken(30), expiresIn: 30 }]
+          : undefined,
+    });
+
+    await call("list-secrets", SECRET_LOCATION);
+    await call("list-secrets", SECRET_LOCATION);
+
+    const logins = api.requests.filter((request) => request.path.includes("/auth/"));
+    assert.equal(logins.length, 2);
+  });
+
+  test("uses a configured access token without logging in", async (t) => {
+    const { call, api } = await setup(t, {
+      env: { INFISICAL_AUTH_METHOD: "access-token", INFISICAL_TOKEN: "configured-token" },
+    });
+
+    await call("list-secrets", SECRET_LOCATION);
+
+    assert.equal(api.requests.length, 1);
+    assert.equal(api.requests[0].authorization, "Bearer configured-token");
+  });
+});
+
+describe("audit log", () => {
+  test("records who called which tool on what, and never a secret", async (t) => {
+    const { call, logs } = await setup(t, { env: { ...ALL_TOOLS, ...UNMASKED } });
+
+    await call("create-secret", {
+      ...SECRET_LOCATION,
+      secretName: "NEW_KEY",
+      secretValue: SECRET_VALUE,
+    });
+    await call("get-secret", { ...SECRET_LOCATION, secretName: "NEW_KEY" });
+
+    assert.equal(logs.length, 2);
+    assert.deepEqual(
+      { ...logs[0], durationMs: undefined },
+      {
+        level: "info",
+        event: "tool_call",
+        tool: "create-secret",
+        outcome: "success",
+        durationMs: undefined,
+        actor: { authMethod: "universal-auth", clientId: "universal-auth-client-id" },
+        client: { name: "test-client", version: "1.0.0" },
+        arguments: { projectId: "project-1", environmentSlug: "dev", secretName: "NEW_KEY" },
+      },
+    );
+    assert.equal(typeof logs[0].durationMs, "number");
+
+    const written = JSON.stringify(logs);
+    assert.ok(!written.includes(SECRET_VALUE));
+    assert.ok(!written.includes(CLIENT_SECRET));
+    assert.ok(!written.includes("Bearer"));
+  });
+
+  test("can be turned off", async (t) => {
+    const { call, logs } = await setup(t, { env: { INFISICAL_AUDIT_LOG: "false" } });
+
+    await call("list-secrets", SECRET_LOCATION);
+
+    assert.equal(logs.length, 0);
+  });
+});
