@@ -457,6 +457,41 @@ describe("writing secrets", () => {
   });
 });
 
+describe("writes that need approval", () => {
+  const CHANGE_REQUEST = {
+    id: "3f2c1a9e-0000-4000-8000-000000000001",
+    slug: "quiet-otter",
+    status: "open",
+    policyId: "3f2c1a9e-0000-4000-8000-000000000002",
+  };
+
+  for (const [tool, method, args] of [
+    ["create-secret", "POST", { secretName: "NEW_KEY", secretValue: SECRET_VALUE }],
+    ["update-secret", "PATCH", { secretName: "DB_PASSWORD", secretValue: "rotated-value" }],
+    ["delete-secret", "DELETE", { secretName: "DB_PASSWORD" }],
+  ]) {
+    test(`${tool} reports a pending change request instead of a change`, async (t) => {
+      const { call } = await setup(t, {
+        env: ALL_TOOLS,
+        respond: (request) =>
+          request.method === method && request.path.startsWith("/api/v4/secrets/")
+            ? [200, { approval: CHANGE_REQUEST }]
+            : undefined,
+      });
+
+      const text = await call(tool, { ...SECRET_LOCATION, ...args });
+
+      assert.match(text, /not applied yet/);
+      assert.deepEqual(parseResponse(text), {
+        id: CHANGE_REQUEST.id,
+        slug: CHANGE_REQUEST.slug,
+        status: "open",
+      });
+      assert.ok(!text.includes(SECRET_VALUE));
+    });
+  }
+});
+
 describe("projects, environments, folders and members", () => {
   test("list-projects filters by type, and omits the filter for all", async (t) => {
     const { call, secretRequests } = await setup(t);

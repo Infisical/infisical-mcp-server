@@ -228,6 +228,21 @@ const API_TIMEOUT_MS = 10 * 1000;
 const API_MAX_RETRIES = 4;
 const API_RETRY_DELAY_MS = 1000;
 
+// a write to an environment with a change policy returns a change request
+// instead of the secret, and only takes effect once it is approved
+type ChangeRequest = { id: string; slug: string; status: string };
+
+type SecretWriteResponse = { secret: Secret } | { approval: ChangeRequest };
+
+const pendingApproval = ({ id, slug, status }: ChangeRequest) => ({
+  content: [
+    {
+      type: "text",
+      text: `The change was not applied yet. This environment requires approval for secret changes, so it is waiting in a change request: ${JSON.stringify({ id, slug, status }, null, 3)}`,
+    },
+  ],
+});
+
 // lets the audit log tell a disabled tool apart from other failures
 class ToolNotEnabledError extends McpError {
   constructor(message: string) {
@@ -995,7 +1010,7 @@ export const createServer = (
       if (name === AvailableTools.CreateSecret) {
         const data = createSecretSchema.zod.parse(args);
 
-        const { secret } = await apiRequest<{ secret: Secret }>(
+        const res = await apiRequest<SecretWriteResponse>(
           "POST",
           secretRoute(data.secretName),
           {
@@ -1009,11 +1024,13 @@ export const createServer = (
           signal,
         );
 
+        if ("approval" in res) return pendingApproval(res.approval);
+
         return {
           content: [
             {
               type: "text",
-              text: `Secret created successfully: ${JSON.stringify(maskSecret(secret), null, 3)}`,
+              text: `Secret created successfully: ${JSON.stringify(maskSecret(res.secret), null, 3)}`,
             },
           ],
         };
@@ -1022,7 +1039,7 @@ export const createServer = (
       if (name === AvailableTools.DeleteSecret) {
         const data = deleteSecretSchema.zod.parse(args);
 
-        const { secret } = await apiRequest<{ secret: Secret }>(
+        const res = await apiRequest<SecretWriteResponse>(
           "DELETE",
           secretRoute(data.secretName),
           {
@@ -1035,11 +1052,13 @@ export const createServer = (
           signal,
         );
 
+        if ("approval" in res) return pendingApproval(res.approval);
+
         return {
           content: [
             {
               type: "text",
-              text: `Secret deleted successfully: ${secret.secretKey}`,
+              text: `Secret deleted successfully: ${res.secret.secretKey}`,
             },
           ],
         };
@@ -1048,7 +1067,7 @@ export const createServer = (
       if (name === AvailableTools.UpdateSecret) {
         const data = updateSecretSchema.zod.parse(args);
 
-        const { secret } = await apiRequest<{ secret: Secret }>(
+        const res = await apiRequest<SecretWriteResponse>(
           "PATCH",
           secretRoute(data.secretName),
           {
@@ -1064,11 +1083,13 @@ export const createServer = (
           signal,
         );
 
+        if ("approval" in res) return pendingApproval(res.approval);
+
         return {
           content: [
             {
               type: "text",
-              text: `Secret updated successfully. Updated secret: ${JSON.stringify(maskSecret(secret), null, 3)}`,
+              text: `Secret updated successfully. Updated secret: ${JSON.stringify(maskSecret(res.secret), null, 3)}`,
             },
           ],
         };
