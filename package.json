@@ -5,7 +5,9 @@
   "bin": "dist/index.js",
   "files": [
     "dist",
-    "package.json"
+    "package.json",
+    "npm-shrinkwrap.json",
+    "sbom.cdx.json"
   ],
   "repository": {
     "type": "git",
@@ -38,9 +40,9 @@
 
   "dependencies": {
     "@infisical/sdk": "4.0.1",
-    "@modelcontextprotocol/sdk": "^1.9.0",
-    "axios": "^1.9.0",
-    "zod": "^3.24.2"
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "axios": "1.20.0",
+    "zod": "3.24.2"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",

@@ -24,7 +24,7 @@ jobs:
               with:
                 node-version: '24.14.0'
                 cache: "npm"
-                cache-dependency-path: package-lock.json
+                cache-dependency-path: npm-shrinkwrap.json
 
             - name: Install dependencies
               run: npm ci
@@ -49,3 +49,8 @@ jobs:
             # gates on high and above rather than everything
             - name: Audit runtime dependencies
               run: npm audit --omit=dev --audit-level=high
+
+            # checks every installed package against the registry's signatures
+            # and provenance attestations, so a tampered tarball fails the build
+            - name: Verify dependency signatures
+              run: npm audit signatures
