@@ -4,6 +4,7 @@ import {
   InfisicalSDK,
   type GetSecretResponse,
   type ListSecretsResponse,
+  type Secret,
 } from "@infisical/sdk";
 import fs from "fs";
 import axios from "axios";
@@ -867,15 +868,25 @@ export const createServer = (
     return `${hostUrl}${route}`;
   };
 
-  const apiGet = async <T>(
+  const apiRequest = async <T>(
+    method: "GET" | "POST" | "PATCH" | "DELETE",
     route: string,
-    params: Record<string, string | undefined>,
+    {
+      params,
+      data,
+    }: {
+      params?: Record<string, string | undefined>;
+      data?: Record<string, unknown>;
+    },
     signal: AbortSignal,
   ) => {
     for (let attempt = 0; ; attempt++) {
       try {
-        const res = await axios.get<T>(apiUrl(route), {
+        const res = await axios.request<T>({
+          method,
+          url: apiUrl(route),
           params,
+          data,
           signal,
           timeout: requestTimeoutMs,
           headers: {
@@ -913,8 +924,15 @@ export const createServer = (
     }
   };
 
-  // the SDK sends includeImports, but the v3 secret endpoints read
-  // include_imports, so imports never came back; call them directly instead.
+  // the secret tools call the v4 secrets API directly. the SDK targets the
+  // deprecated v3 routes, and sends their imports flag under a name they
+  // ignore, so imports never came back. v4 is also the API that Infisical's
+  // own end-to-end tests cover
+  const secretRoute = (secretName?: string) =>
+    secretName === undefined
+      ? "/v4/secrets"
+      : `/v4/secrets/${encodeURIComponent(secretName)}`;
+
   // with masking on, ask for no values at all so none reach this process
   const secretReadParams = (data: {
     projectId: string;
@@ -923,11 +941,11 @@ export const createServer = (
     expandSecretReferences: boolean;
     includeImports: boolean;
   }) => ({
-    workspaceId: data.projectId,
+    projectId: data.projectId,
     environment: data.environmentSlug,
     secretPath: data.secretPath,
     expandSecretReferences: String(data.expandSecretReferences),
-    include_imports: String(data.includeImports),
+    includeImports: String(data.includeImports),
     viewSecretValue: String(!env.INFISICAL_MASK_SECRET_VALUES),
   });
 
@@ -977,14 +995,19 @@ export const createServer = (
       if (name === AvailableTools.CreateSecret) {
         const data = createSecretSchema.zod.parse(args);
 
-        const { secret } = await infisicalSdk
-          .secrets()
-          .createSecret(data.secretName, {
-            environment: data.environmentSlug,
-            projectId: data.projectId,
-            secretPath: data.secretPath,
-            secretValue: data.secretValue ?? "",
-          });
+        const { secret } = await apiRequest<{ secret: Secret }>(
+          "POST",
+          secretRoute(data.secretName),
+          {
+            data: {
+              projectId: data.projectId,
+              environment: data.environmentSlug,
+              secretPath: data.secretPath,
+              secretValue: data.secretValue ?? "",
+            },
+          },
+          signal,
+        );
 
         return {
           content: [
@@ -999,13 +1022,18 @@ export const createServer = (
       if (name === AvailableTools.DeleteSecret) {
         const data = deleteSecretSchema.zod.parse(args);
 
-        const { secret } = await infisicalSdk
-          .secrets()
-          .deleteSecret(data.secretName, {
-            environment: data.environmentSlug,
-            projectId: data.projectId,
-            secretPath: data.secretPath,
-          });
+        const { secret } = await apiRequest<{ secret: Secret }>(
+          "DELETE",
+          secretRoute(data.secretName),
+          {
+            data: {
+              projectId: data.projectId,
+              environment: data.environmentSlug,
+              secretPath: data.secretPath,
+            },
+          },
+          signal,
+        );
 
         return {
           content: [
@@ -1020,16 +1048,21 @@ export const createServer = (
       if (name === AvailableTools.UpdateSecret) {
         const data = updateSecretSchema.zod.parse(args);
 
-        const { secret } = await infisicalSdk
-          .secrets()
-          .updateSecret(data.secretName, {
-            environment: data.environmentSlug,
-            projectId: data.projectId,
-            secretPath: data.secretPath,
-            newSecretName: data.newSecretName,
-            // left undefined, the API keeps the current value
-            secretValue: data.secretValue,
-          });
+        const { secret } = await apiRequest<{ secret: Secret }>(
+          "PATCH",
+          secretRoute(data.secretName),
+          {
+            data: {
+              projectId: data.projectId,
+              environment: data.environmentSlug,
+              secretPath: data.secretPath,
+              newSecretName: data.newSecretName,
+              // left undefined, it is not sent and the API keeps the value
+              secretValue: data.secretValue,
+            },
+          },
+          signal,
+        );
 
         return {
           content: [
@@ -1044,9 +1077,10 @@ export const createServer = (
       if (name === AvailableTools.ListSecrets) {
         const data = listSecretsSchema.zod.parse(args);
 
-        const secrets = await apiGet<ListSecretsResponse>(
-          "/v3/secrets/raw",
-          secretReadParams(data),
+        const secrets = await apiRequest<ListSecretsResponse>(
+          "GET",
+          secretRoute(),
+          { params: secretReadParams(data) },
           signal,
         );
 
@@ -1087,9 +1121,10 @@ export const createServer = (
       if (name === AvailableTools.GetSecret) {
         const data = getSecretSchema.zod.parse(args);
 
-        const { secret } = await apiGet<GetSecretResponse>(
-          `/v3/secrets/raw/${encodeURIComponent(data.secretName)}`,
-          secretReadParams(data),
+        const { secret } = await apiRequest<GetSecretResponse>(
+          "GET",
+          secretRoute(data.secretName),
+          { params: secretReadParams(data) },
           signal,
         );
 
@@ -1189,7 +1224,7 @@ export const createServer = (
       if (name === AvailableTools.ListProjects) {
         const data = listProjectsSchema.zod.parse(args);
 
-        const res = await apiGet<{
+        const res = await apiRequest<{
           workspaces: {
             hasDeleteProtection: boolean;
             id: string;
@@ -1204,10 +1239,13 @@ export const createServer = (
             }[];
           }[];
         }>(
+          "GET",
           "/v1/workspace",
           {
-            // the API has no "all" type; omitting the filter returns every project
-            type: data.type === "all" ? undefined : data.type,
+            params: {
+              // the API has no "all" type; omitting the filter returns every project
+              type: data.type === "all" ? undefined : data.type,
+            },
           },
           signal,
         );

@@ -39,12 +39,12 @@ const defaultResponse = ({ method, path, query, body }) => {
     return [200, { accessToken: accessToken(3600), expiresIn: 3600 }];
   }
 
-  if (method === "GET" && path === "/api/v3/secrets/raw") {
+  if (method === "GET" && path === "/api/v4/secrets") {
     return [
       200,
       {
         secrets: [fakeSecret("DB_PASSWORD", query)],
-        ...(query.include_imports === "true" && {
+        ...(query.includeImports === "true" && {
           imports: [
             {
               secretPath: "/shared",
@@ -57,7 +57,7 @@ const defaultResponse = ({ method, path, query, body }) => {
     ];
   }
 
-  const secretRoute = path.match(/^\/api\/v3\/secrets\/raw\/(.+)$/);
+  const secretRoute = path.match(/^\/api\/v4\/secrets\/(.+)$/);
   if (secretRoute) {
     const secretKey = decodeURIComponent(secretRoute[1]);
     switch (method) {
@@ -328,7 +328,7 @@ describe("reading secrets", () => {
 
     const [request] = secretRequests();
     assert.equal(request.query.viewSecretValue, "false");
-    assert.equal(request.query.workspaceId, "project-1");
+    assert.equal(request.query.projectId, "project-1");
     assert.equal(request.query.environment, "dev");
     assert.equal(request.query.secretPath, "/");
 
@@ -343,7 +343,7 @@ describe("reading secrets", () => {
 
     const response = JSON.parse(await call("list-secrets", SECRET_LOCATION));
 
-    assert.equal(secretRequests()[0].query.include_imports, "true");
+    assert.equal(secretRequests()[0].query.includeImports, "true");
     assert.equal(response.imports[0].secretPath, "/shared");
   });
 
@@ -369,8 +369,8 @@ describe("reading secrets", () => {
     });
 
     const [request] = secretRequests();
-    assert.equal(request.path, "/api/v3/secrets/raw/API%20KEY");
-    assert.equal(request.query.include_imports, "false");
+    assert.equal(request.path, "/api/v4/secrets/API%20KEY");
+    assert.equal(request.query.includeImports, "false");
     assert.equal(request.query.expandSecretReferences, "false");
     assert.equal(request.query.secretPath, "/backend");
     assert.equal(request.query.viewSecretValue, "false");
@@ -398,9 +398,11 @@ describe("writing secrets", () => {
 
     const [request] = secretRequests();
     assert.equal(request.method, "POST");
-    assert.equal(request.path, "/api/v3/secrets/raw/NEW_KEY");
+    assert.equal(request.path, "/api/v4/secrets/NEW_KEY");
     assert.equal(request.body.secretValue, SECRET_VALUE);
-    assert.equal(request.body.workspaceId, "project-1");
+    assert.equal(request.body.projectId, "project-1");
+    assert.equal(request.body.environment, "dev");
+    assert.equal(request.body.secretPath, "/");
     assert.equal(parseResponse(text).secretValue, MASKED_VALUE);
     assert.ok(!text.includes(SECRET_VALUE));
   });
@@ -416,7 +418,9 @@ describe("writing secrets", () => {
 
     const [request] = secretRequests();
     assert.equal(request.method, "PATCH");
-    assert.equal(request.path, "/api/v3/secrets/raw/OLD_NAME");
+    assert.equal(request.path, "/api/v4/secrets/OLD_NAME");
+    assert.equal(request.body.projectId, "project-1");
+    assert.equal(request.body.environment, "dev");
     assert.equal(request.body.newSecretName, "NEW_NAME");
     assert.ok(!("secretValue" in request.body));
   });
@@ -445,7 +449,9 @@ describe("writing secrets", () => {
 
     const [request] = secretRequests();
     assert.equal(request.method, "DELETE");
-    assert.equal(request.path, "/api/v3/secrets/raw/DB_PASSWORD");
+    assert.equal(request.path, "/api/v4/secrets/DB_PASSWORD");
+    assert.equal(request.body.projectId, "project-1");
+    assert.equal(request.body.environment, "dev");
     assert.equal(request.body.secretPath, "/backend");
     assert.equal(text, "Secret deleted successfully: DB_PASSWORD");
   });
@@ -530,7 +536,7 @@ describe("errors", () => {
   test("surfaces an API refusal as a tool error with the API's message", async (t) => {
     const { callError, logs } = await setup(t, {
       respond: ({ path }) =>
-        path.startsWith("/api/v3/secrets/raw")
+        path.startsWith("/api/v4/secrets")
           ? [403, { message: "You are not allowed to read secrets in dev" }]
           : undefined,
     });
@@ -565,7 +571,7 @@ describe("errors", () => {
     const { callError, logs } = await setup(t, {
       env: ALL_TOOLS,
       respond: ({ method, path }) =>
-        method === "POST" && path.startsWith("/api/v3/secrets/raw/")
+        method === "POST" && path.startsWith("/api/v4/secrets/")
           ? [400, { message: "Secret already exist" }]
           : undefined,
     });
@@ -584,7 +590,7 @@ describe("errors", () => {
 
 describe("requests to Infisical", () => {
   const FAST = { requestTimeoutMs: 50, retryDelayMs: 1 };
-  const isListRequest = ({ path }) => path === "/api/v3/secrets/raw";
+  const isListRequest = ({ path }) => path === "/api/v4/secrets";
 
   test("retries a rate-limited read", async (t) => {
     let limited = 2;
@@ -774,7 +780,7 @@ describe("authentication", () => {
   test("gives up when the new token is rejected too", async (t) => {
     const { callError, api } = await setup(t, {
       respond: ({ path }) =>
-        path.startsWith("/api/v3/secrets") ? [401, { message: "Token revoked" }] : undefined,
+        path.startsWith("/api/v4/secrets") ? [401, { message: "Token revoked" }] : undefined,
     });
 
     assert.match(await callError("list-secrets", SECRET_LOCATION), /401: Token revoked/);
