@@ -192,17 +192,26 @@ export const getEnvironmentVariables = (
 
 type Env = ReturnType<typeof getEnvironmentVariables>;
 
-// log in again this long before the access token expires
+// log in again this long before the access token expires, or halfway through
+// its lifetime if that comes first, so a short TTL is not a login per call
 const TOKEN_RENEWAL_MARGIN_MS = 60 * 1000;
 
-// read exp from the access token, so a universal auth session outlives a short
-// TTL. nothing is trusted from it; Infisical verifies the token on every call
-const getTokenExpiry = (token: string | null) => {
+// work out when to log in again from the access token's iat and exp, so a
+// universal auth session outlives a short TTL. the lifetime is measured from
+// iat, so a local clock that disagrees with Infisical's does not matter.
+// nothing is trusted from the token; Infisical verifies it on every call
+const getRenewalTime = (token: string | null, requestedAt: number) => {
   try {
-    const payload = JSON.parse(
+    const { exp, iat } = JSON.parse(
       Buffer.from(token!.split(".")[1], "base64url").toString("utf-8"),
     );
-    return typeof payload.exp === "number" ? payload.exp * 1000 : undefined;
+    if (typeof exp !== "number") return undefined;
+
+    const lifetimeMs =
+      typeof iat === "number" ? (exp - iat) * 1000 : exp * 1000 - requestedAt;
+    const marginMs = Math.min(TOKEN_RENEWAL_MARGIN_MS, lifetimeMs / 2);
+
+    return requestedAt + lifetimeMs - marginMs;
   } catch {
     // a token without a readable exp is treated as never expiring
     return undefined;
@@ -752,28 +761,26 @@ export const createServer = (
   }: ServerOptions = {},
 ) => {
   let isAuthenticated = false;
-  let tokenExpiresAt: number | undefined;
+  let renewLoginAt: number | undefined;
+  let pendingLogin: Promise<void> | undefined;
   const infisicalSdk = new InfisicalSDK({
     siteUrl: env.INFISICAL_HOST_URL,
   });
 
-  const handleAuthentication = async () => {
-    const isTokenExpiring =
-      tokenExpiresAt !== undefined &&
-      Date.now() >= tokenExpiresAt - TOKEN_RENEWAL_MARGIN_MS;
-
-    if (isAuthenticated && !isTokenExpiring) {
-      return;
-    }
-
+  const logIn = async () => {
     switch (env.INFISICAL_AUTH_METHOD) {
-      case InfisicalAuthMethod.UniversalAuth:
+      case InfisicalAuthMethod.UniversalAuth: {
+        const requestedAt = Date.now();
         await infisicalSdk.auth().universalAuth.login({
           clientId: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID!,
           clientSecret: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET!,
         });
-        tokenExpiresAt = getTokenExpiry(infisicalSdk.auth().getAccessToken());
+        renewLoginAt = getRenewalTime(
+          infisicalSdk.auth().getAccessToken(),
+          requestedAt,
+        );
         break;
+      }
       case InfisicalAuthMethod.TokenAuth:
         infisicalSdk.auth().accessToken(env.INFISICAL_TOKEN!);
         break;
@@ -784,6 +791,29 @@ export const createServer = (
     }
 
     isAuthenticated = true;
+  };
+
+  const handleAuthentication = async () => {
+    const isRenewalDue =
+      renewLoginAt !== undefined && Date.now() >= renewLoginAt;
+
+    if (isAuthenticated && !isRenewalDue) {
+      return;
+    }
+
+    // calls that arrive while a login is under way wait for it, rather than
+    // each spending a login of their own
+    if (!pendingLogin) {
+      pendingLogin = (async () => {
+        try {
+          await logIn();
+        } finally {
+          pendingLogin = undefined;
+        }
+      })();
+    }
+
+    await pendingLogin;
   };
 
   const maskSecret = <T extends { secretValue?: string }>(secret: T): T => {

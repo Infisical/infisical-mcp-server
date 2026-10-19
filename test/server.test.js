@@ -15,15 +15,15 @@ const CLIENT_SECRET = "universal-auth-client-secret";
 const MASKED_VALUE = "<masked>";
 const READ_ONLY_TOOLS = ["list-secrets", "get-secret", "list-projects"];
 
-// an unsigned JWT; the server only reads exp from it
-const accessToken = (ttlSeconds) =>
-  [
+// an unsigned JWT; the server only reads iat and exp from it
+const accessToken = (ttlSeconds) => {
+  const iat = Math.floor(Date.now() / 1000);
+  return [
     Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url"),
-    Buffer.from(
-      JSON.stringify({ exp: Math.floor(Date.now() / 1000) + ttlSeconds }),
-    ).toString("base64url"),
+    Buffer.from(JSON.stringify({ iat, exp: iat + ttlSeconds })).toString("base64url"),
     "signature",
   ].join(".");
+};
 
 const fakeSecret = (secretKey, query) => {
   const hidden = query.viewSecretValue === "false";
@@ -641,19 +641,56 @@ describe("authentication", () => {
     assert.ok(calls.every((request) => /^Bearer .+\..+\..+$/.test(request.authorization)));
   });
 
-  test("logs in again when the token is about to expire", async (t) => {
-    const { call, api } = await setup(t, {
+  // the clock is mocked so a token can age without the test waiting
+  const withTokenLifetime = async (t, ttlSeconds) => {
+    t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
+    const context = await setup(t, {
       respond: ({ path }) =>
         path === "/api/v1/auth/universal-auth/login"
-          ? [200, { accessToken: accessToken(30), expiresIn: 30 }]
+          ? [200, { accessToken: accessToken(ttlSeconds), expiresIn: ttlSeconds }]
           : undefined,
     });
+    const logins = () =>
+      context.api.requests.filter((request) => request.path.includes("/auth/")).length;
+    return { ...context, logins };
+  };
+
+  test("keeps a token until a minute before it expires, then logs in again", async (t) => {
+    const { call, logins } = await withTokenLifetime(t, 3600);
+
+    await call("list-secrets", SECRET_LOCATION);
+    t.mock.timers.tick((3600 - 61) * 1000);
+    await call("list-secrets", SECRET_LOCATION);
+    assert.equal(logins(), 1);
+
+    t.mock.timers.tick(2 * 1000);
+    await call("list-secrets", SECRET_LOCATION);
+    assert.equal(logins(), 2);
+  });
+
+  test("renews a short-lived token halfway through, not on every call", async (t) => {
+    const { call, logins } = await withTokenLifetime(t, 30);
 
     await call("list-secrets", SECRET_LOCATION);
     await call("list-secrets", SECRET_LOCATION);
+    t.mock.timers.tick(14 * 1000);
+    await call("list-secrets", SECRET_LOCATION);
+    assert.equal(logins(), 1);
+
+    t.mock.timers.tick(2 * 1000);
+    await call("list-secrets", SECRET_LOCATION);
+    assert.equal(logins(), 2);
+  });
+
+  test("shares one login between calls that arrive together", async (t) => {
+    const { call, api } = await setup(t);
+
+    await Promise.all(
+      Array.from({ length: 5 }, () => call("list-secrets", SECRET_LOCATION)),
+    );
 
     const logins = api.requests.filter((request) => request.path.includes("/auth/"));
-    assert.equal(logins.length, 2);
+    assert.equal(logins.length, 1);
   });
 
   test("uses a configured access token without logging in", async (t) => {
