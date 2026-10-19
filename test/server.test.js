@@ -836,6 +836,35 @@ describe("audit log", () => {
     assert.ok(!written.includes("Bearer"));
   });
 
+  test("records an unknown tool as an error, not as denied", async (t) => {
+    const { call, logs } = await setup(t, { env: ALL_TOOLS });
+
+    await assert.rejects(call("read-minds", {}));
+
+    assert.equal(logs[0].outcome, "error");
+    assert.equal(logs[0].level, "error");
+  });
+
+  test("does not fail a call that worked when the entry cannot be written", async (t) => {
+    const { call, secretRequests } = await setup(t, {
+      env: ALL_TOOLS,
+      options: {
+        log: () => {
+          throw new Error("No space left on device");
+        },
+      },
+    });
+
+    const text = await call("create-secret", {
+      ...SECRET_LOCATION,
+      secretName: "NEW_KEY",
+      secretValue: SECRET_VALUE,
+    });
+
+    assert.match(text, /Secret created successfully/);
+    assert.equal(secretRequests().length, 1);
+  });
+
   test("can be turned off", async (t) => {
     const { call, logs } = await setup(t, { env: { INFISICAL_AUDIT_LOG: "false" } });
 

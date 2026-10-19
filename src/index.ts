@@ -224,6 +224,9 @@ const API_TIMEOUT_MS = 10 * 1000;
 const API_MAX_RETRIES = 4;
 const API_RETRY_DELAY_MS = 1000;
 
+// lets the audit log tell a disabled tool apart from other failures
+class ToolNotEnabledError extends Error {}
+
 class ApiRequestError extends Error {
   constructor(
     message: string,
@@ -954,7 +957,7 @@ export const createServer = (
 
       // gate before authenticating so a disabled tool never touches credentials
       if (!isToolEnabled(name)) {
-        throw new Error(
+        throw new ToolNotEnabledError(
           `Tool "${name}" is not enabled on this server. Enabled tools: ${env.INFISICAL_ENABLED_TOOLS.join(", ")}. Add it to INFISICAL_ENABLED_TOOLS in the server's configuration to enable it.`,
         );
       }
@@ -1272,17 +1275,24 @@ export const createServer = (
       if (!env.INFISICAL_AUDIT_LOG) return;
 
       const client = server.getClientVersion();
-      log({
-        level: { success: "info", denied: "warn", error: "error" }[outcome],
-        event: "tool_call",
-        tool: name,
-        outcome,
-        durationMs: Date.now() - startedAt,
-        actor,
-        client: client && { name: client.name, version: client.version },
-        arguments: auditedArguments(args),
-        ...(error && { error }),
-      });
+
+      // a log entry that cannot be written must not turn a call that worked
+      // into a failure, or a client might repeat a write that already happened
+      try {
+        log({
+          level: { success: "info", denied: "warn", error: "error" }[outcome],
+          event: "tool_call",
+          tool: name,
+          outcome,
+          durationMs: Date.now() - startedAt,
+          actor,
+          client: client && { name: client.name, version: client.version },
+          arguments: auditedArguments(args),
+          ...(error && { error }),
+        });
+      } catch {
+        // there is nowhere left to report it
+      }
     };
 
     try {
@@ -1290,7 +1300,10 @@ export const createServer = (
       audit("success");
       return result;
     } catch (err) {
-      audit(isToolEnabled(name) ? "error" : "denied", (err as Error).message);
+      audit(
+        err instanceof ToolNotEnabledError ? "denied" : "error",
+        (err as Error).message,
+      );
       throw err;
     }
   });
