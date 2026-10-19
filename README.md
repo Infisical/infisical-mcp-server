@@ -14,7 +14,7 @@ In order to use the MCP server, you must first set the environment variables req
 - `INFISICAL_TOKEN`: An access token for authentication. This can be both a personal access token or a machine identity access token. Required when `INFISICAL_AUTH_METHOD` is `access-token`.
 - `INFISICAL_HOST_URL`: **Optionally** set a custom host URL. This is useful if you're self-hosting Infisical or you're on dedicated infrastructure. Defaults to `https://app.infisical.com`.
 
-See [Limiting what the server exposes](#limiting-what-the-server-exposes) for two optional variables that restrict which tools are available and whether secret values are returned.
+By default the server only exposes the tools that read, and masks secret values. See [Limiting what the server exposes](#limiting-what-the-server-exposes) to change either.
 
 To run the Infisical MCP server using npx, use the following command:
 
@@ -64,27 +64,38 @@ Add the following to your `claude_desktop_config.json`. See [here](https://model
 
 ## Available tools
 
-| Tool                        | Description                             |
-| --------------------------- | --------------------------------------- |
-| `create-secret`             | Create a new secret                     |
-| `delete-secret`             | Delete a secret                         |
-| `update-secret`             | Update a secret                         |
-| `list-secrets`              | Lists all secrets                       |
-| `get-secret`                | Get a single secret                     |
-| `create-project`            | Create a new project                    |
-| `create-environment`        | Create a new environment                |
-| `create-folder`             | Create a new folder                     |
-| `invite-members-to-project` | Invite one or more members to a project |
-| `list-projects`             | List all projects                       |
+| Tool                        | Description                             | Enabled by default |
+| --------------------------- | --------------------------------------- | ------------------ |
+| `create-secret`             | Create a new secret                     | No                 |
+| `delete-secret`             | Delete a secret                         | No                 |
+| `update-secret`             | Update a secret                         | No                 |
+| `list-secrets`              | Lists all secrets                       | Yes                |
+| `get-secret`                | Get a single secret                     | Yes                |
+| `create-project`            | Create a new project                    | No                 |
+| `create-environment`        | Create a new environment                | No                 |
+| `create-folder`             | Create a new folder                     | No                 |
+| `invite-members-to-project` | Invite one or more members to a project | No                 |
+| `list-projects`             | List all projects                       | Yes                |
 
 ## Limiting what the server exposes
 
-Both variables are optional, and their defaults keep the server's existing behaviour.
+The server starts locked down: it exposes only the tools that read, and masks secret values. Two optional variables change that.
 
-- `INFISICAL_ENABLED_TOOLS`: a comma-separated allowlist of tools to expose, using the tool names from the table above (for example `list-projects,list-secrets,get-secret` for a read-only server). Tools left out are hidden from `tools/list` and refused if called. An unknown name fails at startup. Omit the variable to expose every tool.
-- `INFISICAL_MASK_SECRET_VALUES`: `true` or `false`, case-insensitive. Defaults to `false`. When `true`, secret values in tool responses are replaced with `<masked>`, keeping secret material out of the model's context. Secret names, paths, and other metadata are still returned.
+- `INFISICAL_ENABLED_TOOLS`: a comma-separated allowlist of tools to expose, using the tool names from the table above. Defaults to `list-projects,list-secrets,get-secret`. Set it to `all` to expose every tool, or list the ones you need, for example `list-projects,list-secrets,get-secret,create-secret`. Tools left out are hidden from `tools/list` and refused if called. An unknown name fails at startup, and so does an empty value.
+- `INFISICAL_MASK_SECRET_VALUES`: `true` or `false`, case-insensitive. Defaults to `true`, which replaces secret values in tool responses with `<masked>`. For `list-secrets` and `get-secret` it also asks Infisical not to send values at all, so they never reach the server or the model. Secret names, paths, and other metadata are still returned. Set it to `false` only if the model needs to read secret values.
 
 Scope the machine identity to only the projects and environments the server needs, rather than using a token with broader access than the exposed tools require.
+
+### Upgrading from 0.0.x
+
+Version 0.1.0 changes both defaults. Earlier versions exposed every tool and returned secret values unless told otherwise. To keep that behaviour, set both variables explicitly:
+
+```json
+"env": {
+  "INFISICAL_ENABLED_TOOLS": "all",
+  "INFISICAL_MASK_SECRET_VALUES": "false"
+}
+```
 
 ## Debugging the Server
 

@@ -36,6 +36,16 @@ enum AvailableTools {
 
 const ALL_TOOLS = Object.values(AvailableTools);
 
+// exposed when INFISICAL_ENABLED_TOOLS is unset; none of them change anything
+const READ_ONLY_TOOLS = [
+  AvailableTools.ListProjects,
+  AvailableTools.ListSecrets,
+  AvailableTools.GetSecret,
+];
+
+// the INFISICAL_ENABLED_TOOLS value that exposes every tool
+const ALL_TOOLS_KEYWORD = "all";
+
 // must match ProjectType in the API
 const PROJECT_TYPES = [
   "secret-manager",
@@ -96,13 +106,25 @@ export const getEnvironmentVariables = (
         .trim()
         .optional()
         .transform((val, ctx) => {
-          // an empty value is an error, not "expose everything"
-          if (val === undefined) return ALL_TOOLS;
+          // an empty value is an error, not the default
+          if (val === undefined) return READ_ONLY_TOOLS;
 
           const requested = val
             .split(",")
             .map((name) => name.trim())
             .filter(Boolean);
+
+          if (requested.includes(ALL_TOOLS_KEYWORD)) {
+            if (requested.length > 1) {
+              ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                message: `INFISICAL_ENABLED_TOOLS can be "${ALL_TOOLS_KEYWORD}" or a list of tools, not both.`,
+              });
+              return z.NEVER;
+            }
+
+            return ALL_TOOLS;
+          }
 
           const unknown = requested.filter(
             (name) => !ALL_TOOLS.includes(name as AvailableTools),
@@ -110,22 +132,21 @@ export const getEnvironmentVariables = (
           if (unknown.length) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
-              message: `INFISICAL_ENABLED_TOOLS contains unknown tool(s): ${unknown.join(", ")}. Valid tools are: ${ALL_TOOLS.join(", ")}`,
+              message: `INFISICAL_ENABLED_TOOLS contains unknown tool(s): ${unknown.join(", ")}. Valid tools are: ${ALL_TOOLS.join(", ")}, or "${ALL_TOOLS_KEYWORD}" on its own.`,
             });
             return z.NEVER;
           }
           if (!requested.length) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
-              message:
-                "INFISICAL_ENABLED_TOOLS was set but lists no tools. Omit it to expose every tool.",
+              message: `INFISICAL_ENABLED_TOOLS was set but lists no tools. Omit it for the read-only default, or set it to "${ALL_TOOLS_KEYWORD}" to expose every tool.`,
             });
             return z.NEVER;
           }
 
           return requested as AvailableTools[];
         }),
-      INFISICAL_MASK_SECRET_VALUES: stringBoolean(false),
+      INFISICAL_MASK_SECRET_VALUES: stringBoolean(true),
     })
     // validate the env vars on startup to avoid runtime errors
     .superRefine((data, ctx) => {
@@ -775,7 +796,7 @@ export const createServer = (env: Env) => {
       // gate before authenticating so a disabled tool never touches credentials
       if (!isToolEnabled(name)) {
         throw new Error(
-          `Tool "${name}" is not enabled on this server. Enabled tools: ${env.INFISICAL_ENABLED_TOOLS.join(", ")}`,
+          `Tool "${name}" is not enabled on this server. Enabled tools: ${env.INFISICAL_ENABLED_TOOLS.join(", ")}. Add it to INFISICAL_ENABLED_TOOLS in the server's configuration to enable it.`,
         );
       }
 
