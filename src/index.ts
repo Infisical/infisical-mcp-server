@@ -11,6 +11,7 @@ import path from "path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
+  type CallToolRequest,
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
@@ -147,6 +148,7 @@ export const getEnvironmentVariables = (
           return requested as AvailableTools[];
         }),
       INFISICAL_MASK_SECRET_VALUES: stringBoolean(true),
+      INFISICAL_AUDIT_LOG: stringBoolean(true),
     })
     // validate the env vars on startup to avoid runtime errors
     .superRefine((data, ctx) => {
@@ -189,6 +191,53 @@ export const getEnvironmentVariables = (
 };
 
 type Env = ReturnType<typeof getEnvironmentVariables>;
+
+type LogEntry = Record<string, unknown>;
+
+// stdout carries the MCP protocol, so logs go to stderr, one JSON object per line
+const writeLog = (entry: LogEntry) => {
+  process.stderr.write(
+    `${JSON.stringify({ time: new Date().toISOString(), ...entry })}\n`,
+  );
+};
+
+// the tool arguments an audit entry records. secret values are never among
+// them, and anything not listed here is left out
+const AUDITED_ARGUMENTS = [
+  "projectId",
+  "projectName",
+  "slug",
+  "type",
+  "environmentSlug",
+  "environment",
+  "secretPath",
+  "path",
+  "secretName",
+  "newSecretName",
+  "name",
+  "emails",
+  "usernames",
+  "roleSlugs",
+];
+
+const auditedArguments = (args: Record<string, unknown> | undefined) => {
+  const audited: Record<string, unknown> = {};
+
+  for (const key of AUDITED_ARGUMENTS) {
+    const value = args?.[key];
+    const isLoggable =
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean" ||
+      (Array.isArray(value) && value.every((item) => typeof item === "string"));
+
+    if (isLoggable) {
+      audited[key] = value;
+    }
+  }
+
+  return audited;
+};
 
 const createSecretSchema = {
   zod: z.object({
@@ -664,7 +713,10 @@ const allCapabilities = [
   listProjectsSchema.capability,
 ];
 
-export const createServer = (env: Env) => {
+export const createServer = (
+  env: Env,
+  { log = writeLog }: { log?: (entry: LogEntry) => void } = {},
+) => {
   let isAuthenticated = false;
   const infisicalSdk = new InfisicalSDK({
     siteUrl: env.INFISICAL_HOST_URL,
@@ -785,7 +837,7 @@ export const createServer = (env: Env) => {
     };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  const callTool = async (req: CallToolRequest) => {
     try {
       const { name, arguments: args } = req.params;
 
@@ -1015,58 +1067,45 @@ export const createServer = (env: Env) => {
       if (name === AvailableTools.ListProjects) {
         const data = listProjectsSchema.zod.parse(args);
 
-        try {
-          const res = await apiGet<{
-            workspaces: {
-              hasDeleteProtection: boolean;
-              id: string;
+        const res = await apiGet<{
+          workspaces: {
+            hasDeleteProtection: boolean;
+            id: string;
+            name: string;
+            orgId: string;
+            slug: string;
+            type: string;
+            environments: {
               name: string;
-              orgId: string;
               slug: string;
-              type: string;
-              environments: {
-                name: string;
-                slug: string;
-                id: string;
-              }[];
+              id: string;
             }[];
-          }>("/v1/workspace", {
-            // the API has no "all" type; omitting the filter returns every project
-            type: data.type === "all" ? undefined : data.type,
-          });
+          }[];
+        }>("/v1/workspace", {
+          // the API has no "all" type; omitting the filter returns every project
+          type: data.type === "all" ? undefined : data.type,
+        });
 
-          const projects = res.workspaces.map((workspace) => ({
-            hasDeleteProtection: workspace.hasDeleteProtection,
-            id: workspace.id,
-            name: workspace.name,
-            orgId: workspace.orgId,
-            slug: workspace.slug,
-            type: workspace.type,
-            environments: workspace.environments.map((environment) => ({
-              ...environment,
-            })),
-          }));
+        const projects = res.workspaces.map((workspace) => ({
+          hasDeleteProtection: workspace.hasDeleteProtection,
+          id: workspace.id,
+          name: workspace.name,
+          orgId: workspace.orgId,
+          slug: workspace.slug,
+          type: workspace.type,
+          environments: workspace.environments.map((environment) => ({
+            ...environment,
+          })),
+        }));
 
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Projects retrieved successfully: ${JSON.stringify(projects, null, 3)}`,
-              },
-            ],
-          };
-        } catch (err) {
-          // log the message rather than the whole error object
-          console.error(`Error retrieving projects: ${(err as Error).message}`);
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Error retrieving projects: ${(err as any).message}.`,
-              },
-            ],
-          };
-        }
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Projects retrieved successfully: ${JSON.stringify(projects, null, 3)}`,
+            },
+          ],
+        };
       }
 
       throw new Error(`Unrecognized tool name: ${name}`);
@@ -1078,6 +1117,45 @@ export const createServer = (env: Env) => {
       }
       throw err;
     }
+  };
+
+  // the client ID names the machine identity; the client secret is never logged
+  const actor = {
+    authMethod: env.INFISICAL_AUTH_METHOD,
+    ...(env.INFISICAL_AUTH_METHOD === InfisicalAuthMethod.UniversalAuth && {
+      clientId: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID,
+    }),
+  };
+
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    const { name, arguments: args } = req.params;
+    const startedAt = Date.now();
+
+    const audit = (outcome: "success" | "denied" | "error", error?: string) => {
+      if (!env.INFISICAL_AUDIT_LOG) return;
+
+      const client = server.getClientVersion();
+      log({
+        level: { success: "info", denied: "warn", error: "error" }[outcome],
+        event: "tool_call",
+        tool: name,
+        outcome,
+        durationMs: Date.now() - startedAt,
+        actor,
+        client: client && { name: client.name, version: client.version },
+        arguments: auditedArguments(args),
+        ...(error && { error }),
+      });
+    };
+
+    try {
+      const result = await callTool(req);
+      audit("success");
+      return result;
+    } catch (err) {
+      audit(isToolEnabled(name) ? "error" : "denied", (err as Error).message);
+      throw err;
+    }
   });
 
   return server;
@@ -1085,10 +1163,22 @@ export const createServer = (env: Env) => {
 
 // serve over stdio when run directly, rather than imported by the tests
 if (require.main === module) {
-  const server = createServer(getEnvironmentVariables());
+  const env = getEnvironmentVariables();
+  const server = createServer(env);
 
   (async () => {
     await server.connect(new StdioServerTransport());
-    console.error("Infisical MCP Server running on stdio ✅");
+    writeLog({
+      level: "info",
+      event: "server_started",
+      message: "Infisical MCP Server running on stdio",
+      version: packageJson.version,
+      // origin only, so a URL with credentials or a path in it is not echoed
+      host: new URL(env.INFISICAL_HOST_URL).origin,
+      authMethod: env.INFISICAL_AUTH_METHOD,
+      enabledTools: env.INFISICAL_ENABLED_TOOLS,
+      maskSecretValues: env.INFISICAL_MASK_SECRET_VALUES,
+      auditLog: env.INFISICAL_AUDIT_LOG,
+    });
   })();
 }

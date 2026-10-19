@@ -97,6 +97,20 @@ Version 0.1.0 changes both defaults. Earlier versions exposed every tool and ret
 }
 ```
 
+## Audit log
+
+The server writes one JSON object per line to stderr: a `server_started` entry with the version, host, enabled tools and masking setting, then a `tool_call` entry for every call. MCP clients usually keep a server's stderr in their logs; Claude Desktop, for example, writes it to `mcp-server-infisical.log`. Each `tool_call` entry records:
+
+- `time`, `tool`, `durationMs`, and `outcome`: `success`, `error`, or `denied` when the tool is not enabled.
+- `actor`: the authentication method and, for universal auth, the machine identity's client ID.
+- `client`: the name and version the MCP client reported when it connected.
+- `arguments`: identifiers only, such as project ID, environment, path, secret name, and the members and roles of an invite.
+- `error`: the error message, when the call failed.
+
+Secret values, the client secret and access tokens are never written. Set `INFISICAL_AUDIT_LOG=false` to turn off the `tool_call` entries.
+
+Infisical's own audit log records every secret operation as well, with the machine identity as the actor. Listing projects is the one call it does not record.
+
 ## Debugging the Server
 
 To debug your server, you can use the [MCP Inspector](https://modelcontextprotocol.io/docs/tools/inspector).
