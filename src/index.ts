@@ -209,6 +209,12 @@ const getTokenExpiry = (token: string | null) => {
   }
 };
 
+// match the SDK's own client: a 10 second timeout, and up to four retries with
+// exponential backoff when rate limited or when no response comes back
+const API_TIMEOUT_MS = 10 * 1000;
+const API_MAX_RETRIES = 4;
+const API_RETRY_DELAY_MS = 1000;
+
 type LogEntry = Record<string, unknown>;
 
 // stdout carries the MCP protocol, so logs go to stderr, one JSON object per line
@@ -730,9 +736,20 @@ const allCapabilities = [
   listProjectsSchema.capability,
 ];
 
+type ServerOptions = {
+  log?: (entry: LogEntry) => void;
+  // the tests shorten these so timeouts and retries run quickly
+  requestTimeoutMs?: number;
+  retryDelayMs?: number;
+};
+
 export const createServer = (
   env: Env,
-  { log = writeLog }: { log?: (entry: LogEntry) => void } = {},
+  {
+    log = writeLog,
+    requestTimeoutMs = API_TIMEOUT_MS,
+    retryDelayMs = API_RETRY_DELAY_MS,
+  }: ServerOptions = {},
 ) => {
   let isAuthenticated = false;
   let tokenExpiresAt: number | undefined;
@@ -792,21 +809,38 @@ export const createServer = (
 
   const apiGet = async <T>(
     route: string,
-    params?: Record<string, string | undefined>,
+    params: Record<string, string | undefined>,
+    signal: AbortSignal,
   ) => {
-    try {
-      const res = await axios.get<T>(apiUrl(route), {
-        params,
-        headers: {
-          Authorization: `Bearer ${infisicalSdk.auth().getAccessToken()}`,
-        },
-      });
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const res = await axios.get<T>(apiUrl(route), {
+          params,
+          signal,
+          timeout: requestTimeoutMs,
+          headers: {
+            Authorization: `Bearer ${infisicalSdk.auth().getAccessToken()}`,
+          },
+        });
 
-      return res.data;
-    } catch (err) {
-      // rethrow a plain error, since an axios error carries the request
-      // config and the bearer token with it
-      if (axios.isAxiosError(err)) {
+        return res.data;
+      } catch (err) {
+        if (!axios.isAxiosError(err)) throw err;
+
+        // a cancelled call also arrives without a response, but is not retried
+        const isRetryable =
+          !axios.isCancel(err) &&
+          (err.response === undefined || err.response.status === 429);
+
+        if (isRetryable && attempt < API_MAX_RETRIES) {
+          const delay = retryDelayMs * 2 ** attempt;
+          const jitter = (Math.random() * 2 - 1) * delay * 0.2;
+          await new Promise((resolve) => setTimeout(resolve, delay + jitter));
+          continue;
+        }
+
+        // rethrow a plain error, since an axios error carries the request
+        // config and the bearer token with it
         const apiMessage = (err.response?.data as { message?: string })
           ?.message;
         throw new Error(
@@ -815,7 +849,6 @@ export const createServer = (
             : err.message,
         );
       }
-      throw err;
     }
   };
 
@@ -860,7 +893,7 @@ export const createServer = (
     };
   });
 
-  const callTool = async (req: CallToolRequest) => {
+  const callTool = async (req: CallToolRequest, signal: AbortSignal) => {
     try {
       const { name, arguments: args } = req.params;
 
@@ -950,6 +983,7 @@ export const createServer = (
         const secrets = await apiGet<ListSecretsResponse>(
           "/v3/secrets/raw",
           secretReadParams(data),
+          signal,
         );
 
         const response = {
@@ -992,6 +1026,7 @@ export const createServer = (
         const { secret } = await apiGet<GetSecretResponse>(
           `/v3/secrets/raw/${encodeURIComponent(data.secretName)}`,
           secretReadParams(data),
+          signal,
         );
 
         return {
@@ -1104,10 +1139,14 @@ export const createServer = (
               id: string;
             }[];
           }[];
-        }>("/v1/workspace", {
-          // the API has no "all" type; omitting the filter returns every project
-          type: data.type === "all" ? undefined : data.type,
-        });
+        }>(
+          "/v1/workspace",
+          {
+            // the API has no "all" type; omitting the filter returns every project
+            type: data.type === "all" ? undefined : data.type,
+          },
+          signal,
+        );
 
         const projects = res.workspaces.map((workspace) => ({
           hasDeleteProtection: workspace.hasDeleteProtection,
@@ -1150,7 +1189,7 @@ export const createServer = (
     }),
   };
 
-  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+  server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
     const { name, arguments: args } = req.params;
     const startedAt = Date.now();
 
@@ -1172,7 +1211,7 @@ export const createServer = (
     };
 
     try {
-      const result = await callTool(req);
+      const result = await callTool(req, extra.signal);
       audit("success");
       return result;
     } catch (err) {

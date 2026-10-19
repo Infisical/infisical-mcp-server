@@ -118,6 +118,9 @@ const defaultResponse = ({ method, path, query, body }) => {
   return [404, { message: `No fake route for ${method} ${path}` }];
 };
 
+// returned by `respond` to leave a request unanswered
+const HANG = Symbol("hang");
+
 // `respond` can answer a request itself, or return undefined to fall through
 const startApi = async (respond) => {
   const requests = [];
@@ -135,8 +138,13 @@ const startApi = async (respond) => {
       };
       requests.push(request);
 
-      const [status, payload] =
-        respond?.(request) ?? defaultResponse(request);
+      const response = respond?.(request) ?? defaultResponse(request);
+      if (response === HANG) {
+        res.on("close", () => (request.closed = true));
+        return;
+      }
+
+      const [status, payload] = response;
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(payload));
     });
@@ -154,7 +162,15 @@ const startApi = async (respond) => {
   };
 };
 
-const setup = async (t, { env = {}, respond } = {}) => {
+const waitFor = async (condition) => {
+  const deadline = Date.now() + 2000;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("Timed out waiting");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+};
+
+const setup = async (t, { env = {}, respond, options = {} } = {}) => {
   const api = await startApi(respond);
   t.after(() => api.close());
 
@@ -166,7 +182,7 @@ const setup = async (t, { env = {}, respond } = {}) => {
       INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: CLIENT_SECRET,
       ...env,
     }),
-    { log: (entry) => logs.push(entry) },
+    { log: (entry) => logs.push(entry), ...options },
   );
 
   const client = new Client({ name: "test-client", version: "1.0.0" });
@@ -540,6 +556,71 @@ describe("errors", () => {
       },
     );
     assert.ok(!JSON.stringify(logs).includes(SECRET_VALUE));
+  });
+});
+
+describe("requests to Infisical", () => {
+  const FAST = { requestTimeoutMs: 50, retryDelayMs: 1 };
+  const isListRequest = ({ path }) => path === "/api/v3/secrets/raw";
+
+  test("retries a rate-limited read", async (t) => {
+    let limited = 2;
+    const { call, secretRequests } = await setup(t, {
+      options: FAST,
+      respond: (request) =>
+        isListRequest(request) && limited-- > 0
+          ? [429, { message: "Too many requests" }]
+          : undefined,
+    });
+
+    const response = JSON.parse(await call("list-secrets", SECRET_LOCATION));
+
+    assert.equal(secretRequests().length, 3);
+    assert.equal(response.secrets[0].secretKey, "DB_PASSWORD");
+  });
+
+  test("gives up on a read that never answers", async (t) => {
+    const { call, secretRequests } = await setup(t, {
+      options: FAST,
+      respond: (request) => (isListRequest(request) ? HANG : undefined),
+    });
+
+    await assert.rejects(call("list-secrets", SECRET_LOCATION), /timeout of 50ms exceeded/);
+    // the first attempt and four retries
+    assert.equal(secretRequests().length, 5);
+  });
+
+  test("does not retry a read Infisical refused", async (t) => {
+    const { call, secretRequests } = await setup(t, {
+      options: FAST,
+      respond: (request) =>
+        isListRequest(request) ? [403, { message: "Forbidden" }] : undefined,
+    });
+
+    await assert.rejects(call("list-secrets", SECRET_LOCATION), /403: Forbidden/);
+    assert.equal(secretRequests().length, 1);
+  });
+
+  test("stops a read when the client cancels the call", async (t) => {
+    const { client, secretRequests } = await setup(t, {
+      options: { retryDelayMs: 1 },
+      respond: (request) => (isListRequest(request) ? HANG : undefined),
+    });
+    const controller = new AbortController();
+
+    const pending = client.callTool(
+      { name: "list-secrets", arguments: SECRET_LOCATION },
+      undefined,
+      { signal: controller.signal },
+    );
+    await waitFor(() => secretRequests().length === 1);
+    controller.abort();
+
+    await assert.rejects(pending);
+    await waitFor(() => secretRequests()[0].closed);
+    // long enough for a retry to have been sent, were one coming
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(secretRequests().length, 1);
   });
 });
 
