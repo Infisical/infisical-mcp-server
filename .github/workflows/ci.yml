@@ -42,18 +42,24 @@ jobs:
                   exit 1
                 fi
 
+            # a tag can point at a commit the checks workflow never ran on
+            - name: Typecheck
+              run: npm run typecheck
+
             - name: Build MCP Server
               run: npm run build
+
+            - name: Test
+              run: npm test --ignore-scripts
 
             # ships inside the package, so it is covered by the provenance attestation
             - name: Generate SBOM
               run: npm sbom --omit dev --sbom-format cyclonedx --sbom-type application > sbom.cdx.json
 
-            - name: Pack NPM
-              run: npm pack
-
+            # npm has no --tarball option and ignored it, publishing this directory
+            # rather than the packed tarball; say so instead of relying on it
             - name: Publish NPM
-              run: npm publish --tarball=./infisical-mcp-${{github.ref_name}} --access public
+              run: npm publish --access public
 
             - name: Attach SBOM to the GitHub release
               env:

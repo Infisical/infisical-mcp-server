@@ -35,8 +35,9 @@ jobs:
             - name: Build
               run: npm run build
 
+            # the step above already built; --ignore-scripts skips the pretest build
             - name: Test
-              run: npm test
+              run: npm test --ignore-scripts
 
             - name: Check error logging
               run: |
