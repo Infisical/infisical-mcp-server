@@ -833,7 +833,9 @@ export const createServer = (env: Env) => {
             environment: data.environmentSlug,
             projectId: data.projectId,
             secretPath: data.secretPath,
-            secretValue: data.secretValue ?? "",
+            newSecretName: data.newSecretName,
+            // left undefined, the API keeps the current value
+            secretValue: data.secretValue,
           });
 
         return {
