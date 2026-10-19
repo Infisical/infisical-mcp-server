@@ -68,7 +68,9 @@ const packageJson = JSON.parse(
   fs.readFileSync(path.join(__dirname, "../package.json"), "utf-8"),
 ) as { version: string };
 
-const getEnvironmentVariables = () => {
+export const getEnvironmentVariables = (
+  source: NodeJS.ProcessEnv = process.env,
+) => {
   const envSchema = z
     .object({
       INFISICAL_AUTH_METHOD: z
@@ -156,60 +158,12 @@ const getEnvironmentVariables = () => {
           break;
       }
     })
-    .parse(process.env);
+    .parse(source);
 
   return envSchema;
 };
 
-const env = getEnvironmentVariables();
-let isAuthenticated = false;
-const infisicalSdk = new InfisicalSDK({
-  siteUrl: env.INFISICAL_HOST_URL,
-});
-
-const handleAuthentication = async () => {
-  if (isAuthenticated) {
-    return;
-  }
-
-  switch (env.INFISICAL_AUTH_METHOD) {
-    case InfisicalAuthMethod.UniversalAuth:
-      await infisicalSdk.auth().universalAuth.login({
-        clientId: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID!,
-        clientSecret: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET!,
-      });
-      break;
-    case InfisicalAuthMethod.TokenAuth:
-      infisicalSdk.auth().accessToken(env.INFISICAL_TOKEN!);
-      break;
-    default:
-      throw new Error(
-        `Unsupported authentication method: ${env.INFISICAL_AUTH_METHOD}`,
-      );
-  }
-
-  isAuthenticated = true;
-};
-
-const maskSecret = <T extends { secretValue?: string }>(secret: T): T => {
-  if (!env.INFISICAL_MASK_SECRET_VALUES || secret.secretValue === undefined) {
-    return secret;
-  }
-
-  return { ...secret, secretValue: MASKED_VALUE };
-};
-
-const server = new Server(
-  {
-    name: "Infisical",
-    version: packageJson.version,
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  },
-);
+type Env = ReturnType<typeof getEnvironmentVariables>;
 
 const createSecretSchema = {
   zod: z.object({
@@ -685,333 +639,391 @@ const allCapabilities = [
   listProjectsSchema.capability,
 ];
 
-const isToolEnabled = (name: string) =>
-  env.INFISICAL_ENABLED_TOOLS.includes(name as AvailableTools);
+export const createServer = (env: Env) => {
+  let isAuthenticated = false;
+  const infisicalSdk = new InfisicalSDK({
+    siteUrl: env.INFISICAL_HOST_URL,
+  });
 
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: allCapabilities.filter((capability) =>
-      isToolEnabled(capability.name),
-    ),
+  const handleAuthentication = async () => {
+    if (isAuthenticated) {
+      return;
+    }
+
+    switch (env.INFISICAL_AUTH_METHOD) {
+      case InfisicalAuthMethod.UniversalAuth:
+        await infisicalSdk.auth().universalAuth.login({
+          clientId: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID!,
+          clientSecret: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET!,
+        });
+        break;
+      case InfisicalAuthMethod.TokenAuth:
+        infisicalSdk.auth().accessToken(env.INFISICAL_TOKEN!);
+        break;
+      default:
+        throw new Error(
+          `Unsupported authentication method: ${env.INFISICAL_AUTH_METHOD}`,
+        );
+    }
+
+    isAuthenticated = true;
   };
-});
 
-server.setRequestHandler(CallToolRequestSchema, async (req) => {
-  try {
-    const { name, arguments: args } = req.params;
-
-    if (!ALL_TOOLS.includes(name as AvailableTools)) {
-      throw new Error(`Unrecognized tool name: ${name}`);
+  const maskSecret = <T extends { secretValue?: string }>(secret: T): T => {
+    if (!env.INFISICAL_MASK_SECRET_VALUES || secret.secretValue === undefined) {
+      return secret;
     }
 
-    // gate before authenticating so a disabled tool never touches credentials
-    if (!isToolEnabled(name)) {
-      throw new Error(
-        `Tool "${name}" is not enabled on this server. Enabled tools: ${env.INFISICAL_ENABLED_TOOLS.join(", ")}`,
-      );
-    }
+    return { ...secret, secretValue: MASKED_VALUE };
+  };
 
-    await handleAuthentication();
+  const server = new Server(
+    {
+      name: "Infisical",
+      version: packageJson.version,
+    },
+    {
+      capabilities: {
+        tools: {},
+      },
+    },
+  );
 
-    if (name === AvailableTools.CreateSecret) {
-      const data = createSecretSchema.zod.parse(args);
+  const isToolEnabled = (name: string) =>
+    env.INFISICAL_ENABLED_TOOLS.includes(name as AvailableTools);
 
-      const { secret } = await infisicalSdk
-        .secrets()
-        .createSecret(data.secretName, {
-          environment: data.environmentSlug,
-          projectId: data.projectId,
-          secretPath: data.secretPath,
-          secretValue: data.secretValue ?? "",
-        });
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    return {
+      tools: allCapabilities.filter((capability) =>
+        isToolEnabled(capability.name),
+      ),
+    };
+  });
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Secret created successfully: ${JSON.stringify(maskSecret(secret), null, 3)}`,
-          },
-        ],
-      };
-    }
+  server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    try {
+      const { name, arguments: args } = req.params;
 
-    if (name === AvailableTools.DeleteSecret) {
-      const data = deleteSecretSchema.zod.parse(args);
+      if (!ALL_TOOLS.includes(name as AvailableTools)) {
+        throw new Error(`Unrecognized tool name: ${name}`);
+      }
 
-      const { secret } = await infisicalSdk
-        .secrets()
-        .deleteSecret(data.secretName, {
-          environment: data.environmentSlug,
-          projectId: data.projectId,
-          secretPath: data.secretPath,
-        });
+      // gate before authenticating so a disabled tool never touches credentials
+      if (!isToolEnabled(name)) {
+        throw new Error(
+          `Tool "${name}" is not enabled on this server. Enabled tools: ${env.INFISICAL_ENABLED_TOOLS.join(", ")}`,
+        );
+      }
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Secret deleted successfully: ${secret.secretKey}`,
-          },
-        ],
-      };
-    }
+      await handleAuthentication();
 
-    if (name === AvailableTools.UpdateSecret) {
-      const data = updateSecretSchema.zod.parse(args);
+      if (name === AvailableTools.CreateSecret) {
+        const data = createSecretSchema.zod.parse(args);
 
-      const { secret } = await infisicalSdk
-        .secrets()
-        .updateSecret(data.secretName, {
-          environment: data.environmentSlug,
-          projectId: data.projectId,
-          secretPath: data.secretPath,
-          secretValue: data.secretValue ?? "",
-        });
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Secret updated successfully. Updated secret: ${JSON.stringify(maskSecret(secret), null, 3)}`,
-          },
-        ],
-      };
-    }
-
-    if (name === AvailableTools.ListSecrets) {
-      const data = listSecretsSchema.zod.parse(args);
-
-      const secrets = await infisicalSdk.secrets().listSecrets({
-        environment: data.environmentSlug,
-        projectId: data.projectId,
-        secretPath: data.secretPath,
-        expandSecretReferences: data.expandSecretReferences,
-        includeImports: data.includeImports,
-      });
-
-      const response = {
-        secrets: secrets.secrets.map((secret) =>
-          maskSecret({
-            secretKey: secret.secretKey,
-            secretValue: secret.secretValue,
-          }),
-        ),
-        ...(secrets.imports && {
-          imports: secrets.imports?.map((imp) => {
-            const parsedImportSecrets = imp.secrets.map((secret) =>
-              maskSecret({
-                secretKey: secret.secretKey,
-                secretValue: secret.secretValue,
-              }),
-            );
-
-            return {
-              ...imp,
-              secrets: parsedImportSecrets,
-            };
-          }),
-        }),
-      };
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `${JSON.stringify(response)}`,
-          },
-        ],
-      };
-    }
-
-    if (name === AvailableTools.GetSecret) {
-      const data = getSecretSchema.zod.parse(args);
-
-      const secret = await infisicalSdk.secrets().getSecret({
-        environment: data.environmentSlug,
-        projectId: data.projectId,
-        secretName: data.secretName,
-        secretPath: data.secretPath,
-        expandSecretReferences: data.expandSecretReferences,
-        includeImports: data.includeImports,
-      });
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Secret retrieved successfully: ${JSON.stringify(maskSecret(secret), null, 3)}`,
-          },
-        ],
-      };
-    }
-
-    if (name === AvailableTools.CreateProject) {
-      const data = createProjectSchema.zod.parse(args);
-
-      const project = await infisicalSdk.projects().create({
-        projectName: data.projectName,
-        projectDescription: data.description,
-        kmsKeyId: data.kmsKeyId,
-        slug: data.slug,
-        template: data.projectTemplate,
-        type: data.type,
-      });
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Project created successfully: ${JSON.stringify(project, null, 3)}`,
-          },
-        ],
-      };
-    }
-
-    if (name === AvailableTools.CreateEnvironment) {
-      const data = createEnvironmentSchema.zod.parse(args);
-
-      const environment = await infisicalSdk.environments().create({
-        projectId: data.projectId,
-        name: data.name,
-        slug: data.slug,
-        position: data.position,
-      });
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Environment created successfully: ${JSON.stringify(environment, null, 3)}`,
-          },
-        ],
-      };
-    }
-
-    if (name === AvailableTools.CreateFolder) {
-      const data = createFolderSchema.zod.parse(args);
-
-      const folder = await infisicalSdk.folders().create({
-        description: data.description,
-        environment: data.environment,
-        name: data.name,
-        path: data.path,
-        projectId: data.projectId,
-      });
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Folder created successfully: ${JSON.stringify(folder, null, 3)}`,
-          },
-        ],
-      };
-    }
-
-    if (name === AvailableTools.InviteMembersToProject) {
-      const data = inviteMembersToProjectSchema.zod.parse(args);
-
-      const projectMemberships = await infisicalSdk.projects().inviteMembers({
-        projectId: data.projectId,
-        emails: data.emails,
-        usernames: data.usernames,
-        roleSlugs: data.roleSlugs,
-      });
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: `Members successfully invited to project: ${JSON.stringify(projectMemberships, null, 3)}`,
-          },
-        ],
-      };
-    }
-
-    if (name === AvailableTools.ListProjects) {
-      const data = listProjectsSchema.zod.parse(args);
-      const accessToken = infisicalSdk.auth().getAccessToken();
-
-      try {
-        let hostUrl = env.INFISICAL_HOST_URL;
-        if (!hostUrl.endsWith("/api")) {
-          if (hostUrl.endsWith("/")) {
-            hostUrl = hostUrl.slice(0, -1);
-          }
-
-          hostUrl += "/api";
-        }
-
-        // the API has no "all" type; omitting the filter returns every project
-        const typeQuery =
-          data.type === "all" ? "" : `?type=${encodeURIComponent(data.type)}`;
-
-        const res = await axios.get<{
-          workspaces: {
-            hasDeleteProtection: boolean;
-            id: string;
-            name: string;
-            orgId: string;
-            slug: string;
-            type: string;
-            environments: {
-              name: string;
-              slug: string;
-              id: string;
-            }[];
-          }[];
-        }>(`${hostUrl}/v1/workspace${typeQuery}`, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        });
-
-        const projects = res.data.workspaces.map((workspace) => ({
-          hasDeleteProtection: workspace.hasDeleteProtection,
-          id: workspace.id,
-          name: workspace.name,
-          orgId: workspace.orgId,
-          slug: workspace.slug,
-          type: workspace.type,
-          environments: workspace.environments.map((environment) => ({
-            ...environment,
-          })),
-        }));
+        const { secret } = await infisicalSdk
+          .secrets()
+          .createSecret(data.secretName, {
+            environment: data.environmentSlug,
+            projectId: data.projectId,
+            secretPath: data.secretPath,
+            secretValue: data.secretValue ?? "",
+          });
 
         return {
           content: [
             {
               type: "text",
-              text: `Projects retrieved successfully: ${JSON.stringify(projects, null, 3)}`,
-            },
-          ],
-        };
-      } catch (err) {
-        // log the message rather than the whole error object
-        console.error(`Error retrieving projects: ${(err as Error).message}`);
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error retrieving projects: ${(err as any).message}.`,
+              text: `Secret created successfully: ${JSON.stringify(maskSecret(secret), null, 3)}`,
             },
           ],
         };
       }
-    }
 
-    throw new Error(`Unrecognized tool name: ${name}`);
-  } catch (err) {
-    if (err instanceof z.ZodError) {
-      throw new Error(
-        `Invalid arguments: ${err.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join(", ")}`,
-      );
-    }
-    throw err;
-  }
-});
+      if (name === AvailableTools.DeleteSecret) {
+        const data = deleteSecretSchema.zod.parse(args);
 
-(async () => {
-  await server.connect(new StdioServerTransport());
-  console.error("Infisical MCP Server running on stdio ✅");
-})();
+        const { secret } = await infisicalSdk
+          .secrets()
+          .deleteSecret(data.secretName, {
+            environment: data.environmentSlug,
+            projectId: data.projectId,
+            secretPath: data.secretPath,
+          });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Secret deleted successfully: ${secret.secretKey}`,
+            },
+          ],
+        };
+      }
+
+      if (name === AvailableTools.UpdateSecret) {
+        const data = updateSecretSchema.zod.parse(args);
+
+        const { secret } = await infisicalSdk
+          .secrets()
+          .updateSecret(data.secretName, {
+            environment: data.environmentSlug,
+            projectId: data.projectId,
+            secretPath: data.secretPath,
+            secretValue: data.secretValue ?? "",
+          });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Secret updated successfully. Updated secret: ${JSON.stringify(maskSecret(secret), null, 3)}`,
+            },
+          ],
+        };
+      }
+
+      if (name === AvailableTools.ListSecrets) {
+        const data = listSecretsSchema.zod.parse(args);
+
+        const secrets = await infisicalSdk.secrets().listSecrets({
+          environment: data.environmentSlug,
+          projectId: data.projectId,
+          secretPath: data.secretPath,
+          expandSecretReferences: data.expandSecretReferences,
+          includeImports: data.includeImports,
+        });
+
+        const response = {
+          secrets: secrets.secrets.map((secret) =>
+            maskSecret({
+              secretKey: secret.secretKey,
+              secretValue: secret.secretValue,
+            }),
+          ),
+          ...(secrets.imports && {
+            imports: secrets.imports?.map((imp) => {
+              const parsedImportSecrets = imp.secrets.map((secret) =>
+                maskSecret({
+                  secretKey: secret.secretKey,
+                  secretValue: secret.secretValue,
+                }),
+              );
+
+              return {
+                ...imp,
+                secrets: parsedImportSecrets,
+              };
+            }),
+          }),
+        };
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `${JSON.stringify(response)}`,
+            },
+          ],
+        };
+      }
+
+      if (name === AvailableTools.GetSecret) {
+        const data = getSecretSchema.zod.parse(args);
+
+        const secret = await infisicalSdk.secrets().getSecret({
+          environment: data.environmentSlug,
+          projectId: data.projectId,
+          secretName: data.secretName,
+          secretPath: data.secretPath,
+          expandSecretReferences: data.expandSecretReferences,
+          includeImports: data.includeImports,
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Secret retrieved successfully: ${JSON.stringify(maskSecret(secret), null, 3)}`,
+            },
+          ],
+        };
+      }
+
+      if (name === AvailableTools.CreateProject) {
+        const data = createProjectSchema.zod.parse(args);
+
+        const project = await infisicalSdk.projects().create({
+          projectName: data.projectName,
+          projectDescription: data.description,
+          kmsKeyId: data.kmsKeyId,
+          slug: data.slug,
+          template: data.projectTemplate,
+          type: data.type,
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Project created successfully: ${JSON.stringify(project, null, 3)}`,
+            },
+          ],
+        };
+      }
+
+      if (name === AvailableTools.CreateEnvironment) {
+        const data = createEnvironmentSchema.zod.parse(args);
+
+        const environment = await infisicalSdk.environments().create({
+          projectId: data.projectId,
+          name: data.name,
+          slug: data.slug,
+          position: data.position,
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Environment created successfully: ${JSON.stringify(environment, null, 3)}`,
+            },
+          ],
+        };
+      }
+
+      if (name === AvailableTools.CreateFolder) {
+        const data = createFolderSchema.zod.parse(args);
+
+        const folder = await infisicalSdk.folders().create({
+          description: data.description,
+          environment: data.environment,
+          name: data.name,
+          path: data.path,
+          projectId: data.projectId,
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Folder created successfully: ${JSON.stringify(folder, null, 3)}`,
+            },
+          ],
+        };
+      }
+
+      if (name === AvailableTools.InviteMembersToProject) {
+        const data = inviteMembersToProjectSchema.zod.parse(args);
+
+        const projectMemberships = await infisicalSdk.projects().inviteMembers({
+          projectId: data.projectId,
+          emails: data.emails,
+          usernames: data.usernames,
+          roleSlugs: data.roleSlugs,
+        });
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Members successfully invited to project: ${JSON.stringify(projectMemberships, null, 3)}`,
+            },
+          ],
+        };
+      }
+
+      if (name === AvailableTools.ListProjects) {
+        const data = listProjectsSchema.zod.parse(args);
+        const accessToken = infisicalSdk.auth().getAccessToken();
+
+        try {
+          let hostUrl = env.INFISICAL_HOST_URL;
+          if (!hostUrl.endsWith("/api")) {
+            if (hostUrl.endsWith("/")) {
+              hostUrl = hostUrl.slice(0, -1);
+            }
+
+            hostUrl += "/api";
+          }
+
+          // the API has no "all" type; omitting the filter returns every project
+          const typeQuery =
+            data.type === "all" ? "" : `?type=${encodeURIComponent(data.type)}`;
+
+          const res = await axios.get<{
+            workspaces: {
+              hasDeleteProtection: boolean;
+              id: string;
+              name: string;
+              orgId: string;
+              slug: string;
+              type: string;
+              environments: {
+                name: string;
+                slug: string;
+                id: string;
+              }[];
+            }[];
+          }>(`${hostUrl}/v1/workspace${typeQuery}`, {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          });
+
+          const projects = res.data.workspaces.map((workspace) => ({
+            hasDeleteProtection: workspace.hasDeleteProtection,
+            id: workspace.id,
+            name: workspace.name,
+            orgId: workspace.orgId,
+            slug: workspace.slug,
+            type: workspace.type,
+            environments: workspace.environments.map((environment) => ({
+              ...environment,
+            })),
+          }));
+
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Projects retrieved successfully: ${JSON.stringify(projects, null, 3)}`,
+              },
+            ],
+          };
+        } catch (err) {
+          // log the message rather than the whole error object
+          console.error(`Error retrieving projects: ${(err as Error).message}`);
+          return {
+            content: [
+              {
+                type: "text",
+                text: `Error retrieving projects: ${(err as any).message}.`,
+              },
+            ],
+          };
+        }
+      }
+
+      throw new Error(`Unrecognized tool name: ${name}`);
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        throw new Error(
+          `Invalid arguments: ${err.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join(", ")}`,
+        );
+      }
+      throw err;
+    }
+  });
+
+  return server;
+};
+
+// serve over stdio when run directly, rather than imported by the tests
+if (require.main === module) {
+  const server = createServer(getEnvironmentVariables());
+
+  (async () => {
+    await server.connect(new StdioServerTransport());
+    console.error("Infisical MCP Server running on stdio ✅");
+  })();
+}
