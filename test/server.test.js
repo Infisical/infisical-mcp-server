@@ -237,6 +237,14 @@ describe("configuration", () => {
     assert.equal(parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length, 10);
   });
 
+  test("gives each parse its own tool list", () => {
+    parse({}).INFISICAL_ENABLED_TOOLS.push("delete-secret");
+    parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length = 0;
+
+    assert.deepEqual([...parse({}).INFISICAL_ENABLED_TOOLS].sort(), [...READ_ONLY_TOOLS].sort());
+    assert.equal(parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length, 10);
+  });
+
   for (const [description, env, message] of [
     ["an unknown tool", { INFISICAL_ENABLED_TOOLS: "get-secret,read-minds" }, /unknown tool\(s\): read-minds/],
     ["an empty tool list", { INFISICAL_ENABLED_TOOLS: " , " }, /lists no tools/],

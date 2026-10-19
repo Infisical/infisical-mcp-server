@@ -107,8 +107,9 @@ export const getEnvironmentVariables = (
         .trim()
         .optional()
         .transform((val, ctx) => {
-          // an empty value is an error, not the default
-          if (val === undefined) return READ_ONLY_TOOLS;
+          // an empty value is an error, not the default. the lists are copied
+          // so a caller changing its env cannot change them for every server
+          if (val === undefined) return [...READ_ONLY_TOOLS];
 
           const requested = val
             .split(",")
@@ -124,7 +125,7 @@ export const getEnvironmentVariables = (
               return z.NEVER;
             }
 
-            return ALL_TOOLS;
+            return [...ALL_TOOLS];
           }
 
           const unknown = requested.filter(
