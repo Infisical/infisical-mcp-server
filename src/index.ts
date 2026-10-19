@@ -192,6 +192,23 @@ export const getEnvironmentVariables = (
 
 type Env = ReturnType<typeof getEnvironmentVariables>;
 
+// log in again this long before the access token expires
+const TOKEN_RENEWAL_MARGIN_MS = 60 * 1000;
+
+// read exp from the access token, so a universal auth session outlives a short
+// TTL. nothing is trusted from it; Infisical verifies the token on every call
+const getTokenExpiry = (token: string | null) => {
+  try {
+    const payload = JSON.parse(
+      Buffer.from(token!.split(".")[1], "base64url").toString("utf-8"),
+    );
+    return typeof payload.exp === "number" ? payload.exp * 1000 : undefined;
+  } catch {
+    // a token without a readable exp is treated as never expiring
+    return undefined;
+  }
+};
+
 type LogEntry = Record<string, unknown>;
 
 // stdout carries the MCP protocol, so logs go to stderr, one JSON object per line
@@ -718,12 +735,17 @@ export const createServer = (
   { log = writeLog }: { log?: (entry: LogEntry) => void } = {},
 ) => {
   let isAuthenticated = false;
+  let tokenExpiresAt: number | undefined;
   const infisicalSdk = new InfisicalSDK({
     siteUrl: env.INFISICAL_HOST_URL,
   });
 
   const handleAuthentication = async () => {
-    if (isAuthenticated) {
+    const isTokenExpiring =
+      tokenExpiresAt !== undefined &&
+      Date.now() >= tokenExpiresAt - TOKEN_RENEWAL_MARGIN_MS;
+
+    if (isAuthenticated && !isTokenExpiring) {
       return;
     }
 
@@ -733,6 +755,7 @@ export const createServer = (
           clientId: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID!,
           clientSecret: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET!,
         });
+        tokenExpiresAt = getTokenExpiry(infisicalSdk.auth().getAccessToken());
         break;
       case InfisicalAuthMethod.TokenAuth:
         infisicalSdk.auth().accessToken(env.INFISICAL_TOKEN!);
