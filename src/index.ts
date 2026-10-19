@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
-import { InfisicalSDK } from "@infisical/sdk";
+import {
+  InfisicalSDK,
+  type GetSecretResponse,
+  type ListSecretsResponse,
+} from "@infisical/sdk";
 import fs from "fs";
 import axios from "axios";
 import path from "path";
@@ -677,6 +681,66 @@ export const createServer = (env: Env) => {
     return { ...secret, secretValue: MASKED_VALUE };
   };
 
+  const apiUrl = (route: string) => {
+    let hostUrl = env.INFISICAL_HOST_URL;
+    if (!hostUrl.endsWith("/api")) {
+      if (hostUrl.endsWith("/")) {
+        hostUrl = hostUrl.slice(0, -1);
+      }
+
+      hostUrl += "/api";
+    }
+
+    return `${hostUrl}${route}`;
+  };
+
+  const apiGet = async <T>(
+    route: string,
+    params?: Record<string, string | undefined>,
+  ) => {
+    try {
+      const res = await axios.get<T>(apiUrl(route), {
+        params,
+        headers: {
+          Authorization: `Bearer ${infisicalSdk.auth().getAccessToken()}`,
+        },
+      });
+
+      return res.data;
+    } catch (err) {
+      // rethrow a plain error, since an axios error carries the request
+      // config and the bearer token with it
+      if (axios.isAxiosError(err)) {
+        const apiMessage = (err.response?.data as { message?: string })
+          ?.message;
+        throw new Error(
+          err.response
+            ? `Infisical API returned ${err.response.status}: ${apiMessage ?? err.message}`
+            : err.message,
+        );
+      }
+      throw err;
+    }
+  };
+
+  // the SDK sends includeImports, but the v3 secret endpoints read
+  // include_imports, so imports never came back; call them directly instead.
+  // with masking on, ask for no values at all so none reach this process
+  const secretReadParams = (data: {
+    projectId: string;
+    environmentSlug: string;
+    secretPath: string;
+    expandSecretReferences: boolean;
+    includeImports: boolean;
+  }) => ({
+    workspaceId: data.projectId,
+    environment: data.environmentSlug,
+    secretPath: data.secretPath,
+    expandSecretReferences: String(data.expandSecretReferences),
+    include_imports: String(data.includeImports),
+    viewSecretValue: String(!env.INFISICAL_MASK_SECRET_VALUES),
+  });
+
   const server = new Server(
     {
       name: "Infisical",
@@ -785,13 +849,10 @@ export const createServer = (env: Env) => {
       if (name === AvailableTools.ListSecrets) {
         const data = listSecretsSchema.zod.parse(args);
 
-        const secrets = await infisicalSdk.secrets().listSecrets({
-          environment: data.environmentSlug,
-          projectId: data.projectId,
-          secretPath: data.secretPath,
-          expandSecretReferences: data.expandSecretReferences,
-          includeImports: data.includeImports,
-        });
+        const secrets = await apiGet<ListSecretsResponse>(
+          "/v3/secrets/raw",
+          secretReadParams(data),
+        );
 
         const response = {
           secrets: secrets.secrets.map((secret) =>
@@ -830,14 +891,10 @@ export const createServer = (env: Env) => {
       if (name === AvailableTools.GetSecret) {
         const data = getSecretSchema.zod.parse(args);
 
-        const secret = await infisicalSdk.secrets().getSecret({
-          environment: data.environmentSlug,
-          projectId: data.projectId,
-          secretName: data.secretName,
-          secretPath: data.secretPath,
-          expandSecretReferences: data.expandSecretReferences,
-          includeImports: data.includeImports,
-        });
+        const { secret } = await apiGet<GetSecretResponse>(
+          `/v3/secrets/raw/${encodeURIComponent(data.secretName)}`,
+          secretReadParams(data),
+        );
 
         return {
           content: [
@@ -934,23 +991,9 @@ export const createServer = (env: Env) => {
 
       if (name === AvailableTools.ListProjects) {
         const data = listProjectsSchema.zod.parse(args);
-        const accessToken = infisicalSdk.auth().getAccessToken();
 
         try {
-          let hostUrl = env.INFISICAL_HOST_URL;
-          if (!hostUrl.endsWith("/api")) {
-            if (hostUrl.endsWith("/")) {
-              hostUrl = hostUrl.slice(0, -1);
-            }
-
-            hostUrl += "/api";
-          }
-
-          // the API has no "all" type; omitting the filter returns every project
-          const typeQuery =
-            data.type === "all" ? "" : `?type=${encodeURIComponent(data.type)}`;
-
-          const res = await axios.get<{
+          const res = await apiGet<{
             workspaces: {
               hasDeleteProtection: boolean;
               id: string;
@@ -964,13 +1007,12 @@ export const createServer = (env: Env) => {
                 id: string;
               }[];
             }[];
-          }>(`${hostUrl}/v1/workspace${typeQuery}`, {
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-            },
+          }>("/v1/workspace", {
+            // the API has no "all" type; omitting the filter returns every project
+            type: data.type === "all" ? undefined : data.type,
           });
 
-          const projects = res.data.workspaces.map((workspace) => ({
+          const projects = res.workspaces.map((workspace) => ({
             hasDeleteProtection: workspace.hasDeleteProtection,
             id: workspace.id,
             name: workspace.name,
