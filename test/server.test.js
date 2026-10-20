@@ -508,7 +508,7 @@ describe("writes that need approval", () => {
     ["delete-secret", "DELETE", { secretName: "DB_PASSWORD" }],
   ]) {
     test(`${tool} reports a pending change request instead of a change`, async (t) => {
-      const { call } = await setup(t, {
+      const { call, logs } = await setup(t, {
         env: ALL_TOOLS,
         respond: (request) =>
           request.method === method && request.path.startsWith("/api/v4/secrets/")
@@ -519,6 +519,7 @@ describe("writes that need approval", () => {
       const text = await call(tool, { ...SECRET_LOCATION, ...args });
 
       assert.match(text, /not applied yet/);
+      assert.equal(logs[0].outcome, "pending_approval");
       assert.deepEqual(parseResponse(text), {
         id: CHANGE_REQUEST.id,
         slug: CHANGE_REQUEST.slug,

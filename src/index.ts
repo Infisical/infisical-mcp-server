@@ -227,7 +227,12 @@ type ChangeRequest = { id: string; slug: string; status: string };
 
 type SecretWriteResponse = { secret: Secret } | { approval: ChangeRequest };
 
+// marks such a result for the audit log. a symbol key is not serialized, so
+// the client never sees it
+const PENDING_APPROVAL = Symbol("pendingApproval");
+
 const pendingApproval = ({ id, slug, status }: ChangeRequest) => ({
+  [PENDING_APPROVAL]: true,
   content: [
     {
       type: "text",
@@ -1437,7 +1442,10 @@ export const createServer = (
     const { name, arguments: args } = req.params;
     const startedAt = Date.now();
 
-    const audit = (outcome: "success" | "denied" | "error", error?: string) => {
+    const audit = (
+      outcome: "success" | "pending_approval" | "denied" | "error",
+      error?: string,
+    ) => {
       if (!env.INFISICAL_AUDIT_LOG) return;
 
       const client = server.getClientVersion();
@@ -1445,7 +1453,12 @@ export const createServer = (
       // safeLog, so a failed write to the log cannot turn a call that worked
       // into a failure, or a client might repeat a write that already happened
       safeLog({
-        level: { success: "info", denied: "warn", error: "error" }[outcome],
+        level: {
+          success: "info",
+          pending_approval: "info",
+          denied: "warn",
+          error: "error",
+        }[outcome],
         event: "tool_call",
         tool: name,
         outcome,
@@ -1459,7 +1472,7 @@ export const createServer = (
 
     try {
       const result = await callToolWithRelogin(req, extra.signal);
-      audit("success");
+      audit(PENDING_APPROVAL in result ? "pending_approval" : "success");
       return result;
     } catch (err) {
       const message = (err as Error).message;

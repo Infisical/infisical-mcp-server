@@ -108,7 +108,7 @@ Existing configurations keep working. Two things behave differently from earlier
 
 The server writes one JSON object per line to stderr: a `server_started` entry with the version, host, enabled tools and masking setting, logged as a warning that names any hardening control left off, then a `tool_call` entry for every call, and a `secrets_api_fallback` warning if the instance has no v4 secrets API. MCP clients usually keep a server's stderr in their logs; Claude Desktop, for example, writes it to `mcp-server-infisical.log`. Each `tool_call` entry records:
 
-- `time`, `tool`, `durationMs`, and `outcome`: `success`, `error`, or `denied` when the tool is not enabled.
+- `time`, `tool`, `durationMs`, and `outcome`: `success`, `pending_approval` when the change is waiting for approval, `error`, or `denied` when the tool is not enabled.
 - `actor`: the authentication method and, for universal auth, the machine identity's client ID.
 - `client`: the name and version the MCP client reported when it connected.
 - `arguments`: identifiers only, such as project ID, environment, path, secret name, and the members and roles of an invite.
