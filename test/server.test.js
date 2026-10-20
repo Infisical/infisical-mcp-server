@@ -19,7 +19,8 @@ const CLIENT_SECRET = "universal-auth-client-secret";
 const MASKED_VALUE = "<masked>";
 const READ_ONLY_TOOLS = ["list-secrets", "get-secret", "list-projects"];
 
-// an unsigned JWT; the server only reads iat and exp from it
+// shaped like Infisical's tokens; the server treats it as opaque, and takes
+// the lifetime from the login's expiresIn
 const accessToken = (ttlSeconds) => {
   const iat = Math.floor(Date.now() / 1000);
   return [
@@ -946,20 +947,21 @@ describe("authentication", () => {
 
   // issues a distinct token per login, and once revoke() is called rejects
   // the tokens issued so far, as Infisical does once a token is revoked or
-  // runs out of uses
+  // runs out of uses. like Infisical, it checks a token sent with any request,
+  // the login included
   const revocableTokens = () => {
     const issued = [];
     const revoked = new Set();
     return {
       revoke: () => issued.forEach((token) => revoked.add(token)),
       respond: (request) => {
+        if (revoked.has(request.authorization?.replace("Bearer ", ""))) {
+          return [401, { message: "Failed to authorize: token usage limit reached" }];
+        }
         if (request.path === "/api/v1/auth/universal-auth/login") {
           const token = `${accessToken(3600)}.${issued.length}`;
           issued.push(token);
           return [200, { accessToken: token, expiresIn: 3600 }];
-        }
-        if (revoked.has(request.authorization?.replace("Bearer ", ""))) {
-          return [401, { message: "Token revoked" }];
         }
       },
     };

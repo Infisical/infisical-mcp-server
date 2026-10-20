@@ -193,26 +193,16 @@ type Env = ReturnType<typeof getEnvironmentVariables>;
 // its lifetime if that comes first, so a short TTL is not a login per call
 const TOKEN_RENEWAL_MARGIN_MS = 60 * 1000;
 
-// work out when to log in again from the access token's iat and exp, so a
-// universal auth session outlives a short TTL. the lifetime is measured from
-// iat, so a local clock that disagrees with Infisical's does not matter.
-// nothing is trusted from the token; Infisical verifies it on every call
-const getRenewalTime = (token: string | null, requestedAt: number) => {
-  try {
-    const { exp, iat } = JSON.parse(
-      Buffer.from(token!.split(".")[1], "base64url").toString("utf-8"),
-    );
-    if (typeof exp !== "number") return undefined;
+// work out when to log in again from the login's expiresIn, which is relative,
+// so a local clock that disagrees with Infisical's does not matter. a token
+// that never expires comes back with an expiresIn of 0
+const getRenewalTime = (expiresIn: number | undefined, requestedAt: number) => {
+  if (!expiresIn || expiresIn <= 0) return undefined;
 
-    const lifetimeMs =
-      typeof iat === "number" ? (exp - iat) * 1000 : exp * 1000 - requestedAt;
-    const marginMs = Math.min(TOKEN_RENEWAL_MARGIN_MS, lifetimeMs / 2);
+  const lifetimeMs = expiresIn * 1000;
+  const marginMs = Math.min(TOKEN_RENEWAL_MARGIN_MS, lifetimeMs / 2);
 
-    return requestedAt + lifetimeMs - marginMs;
-  } catch {
-    // a token without a readable exp is treated as never expiring
-    return undefined;
-  }
+  return requestedAt + lifetimeMs - marginMs;
 };
 
 // match the SDK's own client: a 10 second timeout, and up to four retries with
@@ -272,6 +262,8 @@ type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 type RequestOptions = {
   params?: Record<string, string | undefined>;
   data?: Record<string, unknown>;
+  // send no access token, as for the login itself
+  withoutToken?: boolean;
 };
 
 // where a secret lives, in the fields every secret route takes
@@ -868,14 +860,22 @@ export const createServer = (
     switch (env.INFISICAL_AUTH_METHOD) {
       case InfisicalAuthMethod.UniversalAuth: {
         const requestedAt = Date.now();
-        await infisicalSdk.auth().universalAuth.login({
-          clientId: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID!,
-          clientSecret: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET!,
+        // logged in directly rather than through the SDK, which sends its
+        // current token with every request, the login included. Infisical
+        // refuses a login carrying a revoked or used-up token, so logging in
+        // again after a 401 never worked
+        const { accessToken, expiresIn } = await apiRequest<{
+          accessToken: string;
+          expiresIn?: number;
+        }>("POST", "/v1/auth/universal-auth/login", {
+          data: {
+            clientId: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID,
+            clientSecret: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET,
+          },
+          withoutToken: true,
         });
-        renewLoginAt = getRenewalTime(
-          infisicalSdk.auth().getAccessToken(),
-          requestedAt,
-        );
+        infisicalSdk.auth().accessToken(accessToken);
+        renewLoginAt = getRenewalTime(expiresIn, requestedAt);
         break;
       }
       case InfisicalAuthMethod.TokenAuth:
@@ -937,8 +937,8 @@ export const createServer = (
   const apiRequest = async <T>(
     method: HttpMethod,
     route: string,
-    { params, data }: RequestOptions,
-    signal: AbortSignal,
+    { params, data, withoutToken }: RequestOptions,
+    signal?: AbortSignal,
   ) => {
     // a write may already have been applied when no response comes back, so
     // it is never resent then, only after a 429, which means nothing was done.
@@ -955,9 +955,11 @@ export const createServer = (
           data,
           signal: isRead ? signal : undefined,
           timeout: requestTimeoutMs,
-          headers: {
-            Authorization: `Bearer ${infisicalSdk.auth().getAccessToken()}`,
-          },
+          headers: withoutToken
+            ? {}
+            : {
+                Authorization: `Bearer ${infisicalSdk.auth().getAccessToken()}`,
+              },
         });
 
         return res.data;
