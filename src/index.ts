@@ -332,11 +332,21 @@ const auditedArguments = (args: Record<string, unknown> | undefined) => {
   return audited;
 };
 
+// the name travels in the URL path, where a blank one or "." and ".." would
+// address a different route. Infisical accepts "." as a name, but no URL can
+// reach a secret called that, so refuse it before sending anything
+const secretNameSchema = z
+  .string()
+  .refine(
+    (name) => name.trim() !== "" && name !== "." && name !== "..",
+    'Secret name cannot be blank, "." or ".."',
+  );
+
 const createSecretSchema = {
   zod: z.object({
     projectId: z.string(),
     environmentSlug: z.string(),
-    secretName: z.string(),
+    secretName: secretNameSchema,
     secretValue: z.string().optional(),
     secretPath: z.string().default("/"),
   }),
@@ -385,7 +395,7 @@ const deleteSecretSchema = {
     projectId: z.string(),
     environmentSlug: z.string(),
     secretPath: z.string().default("/"),
-    secretName: z.string(),
+    secretName: secretNameSchema,
   }),
   capability: {
     name: AvailableTools.DeleteSecret,
@@ -427,7 +437,7 @@ const updateSecretSchema = {
   zod: z.object({
     projectId: z.string(),
     environmentSlug: z.string(),
-    secretName: z.string(),
+    secretName: secretNameSchema,
     newSecretName: z.string().optional(),
     secretValue: z.string().optional(),
     secretPath: z.string().default("/"),
@@ -527,7 +537,7 @@ const listSecretsSchema = {
 
 const getSecretSchema = {
   zod: z.object({
-    secretName: z.string(),
+    secretName: secretNameSchema,
     projectId: z.string(),
     environmentSlug: z.string(),
     secretPath: z.string().default("/"),

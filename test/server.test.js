@@ -720,6 +720,21 @@ describe("errors", () => {
     assert.equal(secretRequests().length, 0);
   });
 
+  test("rejects secret names that no URL can address", async (t) => {
+    const { callError, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    for (const secretName of ["", " ", ".", ".."]) {
+      for (const tool of ["get-secret", "create-secret", "update-secret", "delete-secret"]) {
+        assert.match(
+          await callError(tool, { ...SECRET_LOCATION, secretName }),
+          /Invalid arguments: secretName/,
+          `${tool} accepted ${JSON.stringify(secretName)}`,
+        );
+      }
+    }
+    assert.equal(secretRequests().length, 0);
+  });
+
   test("does not echo a submitted value when a write fails", async (t) => {
     const { callError, logs } = await setup(t, {
       env: ALL_TOOLS,
