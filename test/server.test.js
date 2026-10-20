@@ -982,7 +982,18 @@ describe("authentication", () => {
     assert.equal(secretRequests().length, 3);
   });
 
-  test("retries a write the SDK reports as unauthorized", async (t) => {
+  test("logs in again when an SDK-backed tool gets a 401", async (t) => {
+    const tokens = revocableTokens();
+    const { call, api } = await setup(t, { env: ALL_TOOLS, respond: tokens.respond });
+
+    await call("list-secrets", SECRET_LOCATION);
+    tokens.revoke();
+    await call("create-folder", { projectId: "project-1", environment: "dev", name: "backend" });
+
+    assert.equal(countLogins(api), 2);
+  });
+
+  test("retries a direct write after a 401", async (t) => {
     const tokens = revocableTokens();
     const { call, api, secretRequests } = await setup(t, {
       env: ALL_TOOLS,
