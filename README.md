@@ -12,7 +12,7 @@ In order to use the MCP server, you must first set the environment variables req
 - `INFISICAL_UNIVERSAL_AUTH_CLIENT_ID`: The Machine Identity universal auth client ID. Required when `INFISICAL_AUTH_METHOD` is `universal-auth`.
 - `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET`: The Machine Identity universal auth client secret. Required when `INFISICAL_AUTH_METHOD` is `universal-auth`.
 - `INFISICAL_TOKEN`: An access token for authentication. This can be both a personal access token or a machine identity access token. Required when `INFISICAL_AUTH_METHOD` is `access-token`.
-- `INFISICAL_HOST_URL`: **Optionally** set a custom host URL. This is useful if you're self-hosting Infisical or you're on dedicated infrastructure. Defaults to `https://app.infisical.com`. A self-hosted instance must run Infisical v0.150.0 or later.
+- `INFISICAL_HOST_URL`: **Optionally** set a custom host URL. This is useful if you're self-hosting Infisical or you're on dedicated infrastructure. Defaults to `https://app.infisical.com`.
 
 By default every tool is exposed and secret values are returned, as in earlier versions. [Limiting what the server exposes](#limiting-what-the-server-exposes) explains how to restrict both, which we recommend, and [Audit log](#audit-log) covers what the server records.
 
@@ -82,7 +82,7 @@ Add the following to your `claude_desktop_config.json`. See [here](https://model
 Two optional variables restrict the server. Both default to the behaviour of earlier versions, so existing setups keep working. We recommend setting both wherever the model does not need to change anything or read secret values.
 
 - `INFISICAL_ENABLED_TOOLS`: a comma-separated allowlist of tools to expose, using the tool names from the table above. Omit it, or set it to `all`, to expose every tool. For a read-only server, list the read-only tools: `list-projects,list-secrets,get-secret`. Tools left out are hidden from `tools/list` and refused if called. An unknown name fails at startup, and so does an empty value.
-- `INFISICAL_MASK_SECRET_VALUES`: `true` or `false`, case-insensitive. Defaults to `false`. When `true`, secret values in tool responses are replaced with `<masked>`, and `list-secrets` and `get-secret` ask Infisical not to send the values at all, so they never reach the server or the model. Secret names, paths, and other metadata are still returned.
+- `INFISICAL_MASK_SECRET_VALUES`: `true` or `false`, case-insensitive. Defaults to `false`. When `true`, secret values in tool responses are replaced with `<masked>`, and `list-secrets` and `get-secret` ask Infisical not to send the values at all, so on Infisical Cloud and self-hosted v0.116.0 or later they never reach the server or the model. Secret names, paths, and other metadata are still returned.
 
 A hardened configuration sets both:
 
@@ -102,11 +102,11 @@ Scope the machine identity to only the projects and environments the server need
 Existing configurations keep working. Two things behave differently from earlier versions:
 
 - A tool that fails while running, for example because Infisical refused the request, returns a result with `isError` set and the reason as its text, instead of a JSON-RPC error. Calling an unknown or disabled tool is still a JSON-RPC error.
-- The secret tools use Infisical's v4 secrets API, so a self-hosted instance must run v0.150.0 or later.
+- The secret tools use Infisical's v4 secrets API. A self-hosted version before v0.150.0 has none, and on one the server switches to the deprecated v3 routes by itself.
 
 ## Audit log
 
-The server writes one JSON object per line to stderr: a `server_started` entry with the version, host, enabled tools and masking setting, then a `tool_call` entry for every call. MCP clients usually keep a server's stderr in their logs; Claude Desktop, for example, writes it to `mcp-server-infisical.log`. Each `tool_call` entry records:
+The server writes one JSON object per line to stderr: a `server_started` entry with the version, host, enabled tools and masking setting, then a `tool_call` entry for every call, and a `secrets_api_fallback` warning if the instance has no v4 secrets API. MCP clients usually keep a server's stderr in their logs; Claude Desktop, for example, writes it to `mcp-server-infisical.log`. Each `tool_call` entry records:
 
 - `time`, `tool`, `durationMs`, and `outcome`: `success`, `error`, or `denied` when the tool is not enabled.
 - `actor`: the authentication method and, for universal auth, the machine identity's client ID.
@@ -129,6 +129,7 @@ The server talks to its MCP client over stdio and opens no ports. Its only outbo
 | `POST /api/v1/auth/universal-auth/login`              | Universal auth login                                            |
 | `GET /api/v4/secrets`                                 | `list-secrets`                                                  |
 | `GET, POST, PATCH, DELETE /api/v4/secrets/{name}`     | `get-secret`, `create-secret`, `update-secret`, `delete-secret` |
+| `/api/v3/secrets/raw`, `/api/v3/secrets/raw/{name}`   | The same tools, on self-hosted versions before v0.150.0         |
 | `GET /api/v1/workspace`                               | `list-projects`                                                 |
 | `POST /api/v2/workspace`                              | `create-project`                                                |
 | `POST /api/v1/workspace/{projectId}/environments`     | `create-environment`                                            |
@@ -143,7 +144,7 @@ The server enforces no permissions of its own. It can do whatever its identity c
 
 - Prefer a machine identity with universal auth over a personal access token, which carries everything its user can do.
 - Add the identity only to the projects it needs, with a custom role limited to the environments and secret paths in question.
-- With masking on, `list-secrets` and `get-secret` only need the Describe Secret permission. Grant Read Value only if you turn masking off.
+- With masking on, `list-secrets` and `get-secret` only need the Describe Secret permission, on Infisical Cloud or self-hosted v0.116.0 or later. Grant Read Value only if you turn masking off.
 - Grant create, edit or delete on secrets, or permission to manage projects and members, only if you enable the tools that need them.
 - Restrict where the identity can be used from with the client secret's and access token's trusted IPs.
 

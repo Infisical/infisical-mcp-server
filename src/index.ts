@@ -247,10 +247,34 @@ class ApiRequestError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    readonly apiMessage?: string,
   ) {
     super(message);
   }
 }
+
+// Infisical, like Fastify's own default, answers a route it does not have
+// with "Route GET:/api/v4/secrets?... not found"
+const isRouteNotFound = (err: unknown) =>
+  err instanceof ApiRequestError &&
+  err.status === 404 &&
+  /^Route \S+ not found/.test(err.apiMessage ?? "");
+
+// the v3 secret routes take the same fields as v4, two of them renamed
+const V3_FIELD_NAMES: Record<string, string> = {
+  projectId: "workspaceId",
+  includeImports: "include_imports",
+};
+
+const toV3Fields = <V>(fields: Record<string, V>) => {
+  const renamed: Record<string, V> = {};
+
+  for (const key of Object.keys(fields)) {
+    renamed[V3_FIELD_NAMES[key] ?? key] = fields[key];
+  }
+
+  return renamed;
+};
 
 // the SDK's errors only carry the status in their message: [StatusCode=401]
 // when the response had a message, axios's own wording when it did not
@@ -927,19 +951,74 @@ export const createServer = (
         throw new ApiRequestError(
           `Infisical API returned ${err.response.status}: ${apiMessage ?? err.message}`,
           err.response.status,
+          apiMessage,
         );
       }
+    }
+  };
+
+  // a log entry that cannot be written must not change how a call turns out
+  const safeLog = (entry: LogEntry) => {
+    try {
+      log(entry);
+    } catch {
+      // there is nowhere left to report it
     }
   };
 
   // the secret tools call the v4 secrets API directly. the SDK targets the
   // deprecated v3 routes, and sends their imports flag under a name they
   // ignore, so imports never came back. v4 is also the API that Infisical's
-  // own end-to-end tests cover
-  const secretRoute = (secretName?: string) =>
-    secretName === undefined
-      ? "/v4/secrets"
-      : `/v4/secrets/${encodeURIComponent(secretName)}`;
+  // own end-to-end tests cover.
+  //
+  // self-hosted versions before v0.150.0 have no v4 secrets API. the first
+  // time Infisical says the v4 route does not exist, switch to the v3 routes
+  // for the rest of the session
+  let useV3SecretRoutes = false;
+
+  const secretRequest = async <T>(
+    method: "GET" | "POST" | "PATCH" | "DELETE",
+    secretName: string | undefined,
+    {
+      params,
+      data,
+    }: {
+      params?: Record<string, string | undefined>;
+      data?: Record<string, unknown>;
+    },
+    signal: AbortSignal,
+  ) => {
+    const name =
+      secretName === undefined ? "" : `/${encodeURIComponent(secretName)}`;
+
+    if (!useV3SecretRoutes) {
+      try {
+        return await apiRequest<T>(
+          method,
+          `/v4/secrets${name}`,
+          { params, data },
+          signal,
+        );
+      } catch (err) {
+        if (!isRouteNotFound(err)) throw err;
+
+        useV3SecretRoutes = true;
+        safeLog({
+          level: "warn",
+          event: "secrets_api_fallback",
+          message:
+            "Infisical has no v4 secrets API, so the secret tools use the deprecated v3 routes. Upgrade to v0.150.0 or later.",
+        });
+      }
+    }
+
+    return apiRequest<T>(
+      method,
+      `/v3/secrets/raw${name}`,
+      { params: params && toV3Fields(params), data: data && toV3Fields(data) },
+      signal,
+    );
+  };
 
   // with masking on, ask for no values at all so none reach this process
   const secretReadParams = (data: {
@@ -1003,9 +1082,9 @@ export const createServer = (
       if (name === AvailableTools.CreateSecret) {
         const data = createSecretSchema.zod.parse(args);
 
-        const res = await apiRequest<SecretWriteResponse>(
+        const res = await secretRequest<SecretWriteResponse>(
           "POST",
-          secretRoute(data.secretName),
+          data.secretName,
           {
             data: {
               projectId: data.projectId,
@@ -1032,9 +1111,9 @@ export const createServer = (
       if (name === AvailableTools.DeleteSecret) {
         const data = deleteSecretSchema.zod.parse(args);
 
-        const res = await apiRequest<SecretWriteResponse>(
+        const res = await secretRequest<SecretWriteResponse>(
           "DELETE",
-          secretRoute(data.secretName),
+          data.secretName,
           {
             data: {
               projectId: data.projectId,
@@ -1060,9 +1139,9 @@ export const createServer = (
       if (name === AvailableTools.UpdateSecret) {
         const data = updateSecretSchema.zod.parse(args);
 
-        const res = await apiRequest<SecretWriteResponse>(
+        const res = await secretRequest<SecretWriteResponse>(
           "PATCH",
-          secretRoute(data.secretName),
+          data.secretName,
           {
             data: {
               projectId: data.projectId,
@@ -1091,9 +1170,9 @@ export const createServer = (
       if (name === AvailableTools.ListSecrets) {
         const data = listSecretsSchema.zod.parse(args);
 
-        const secrets = await apiRequest<ListSecretsResponse>(
+        const secrets = await secretRequest<ListSecretsResponse>(
           "GET",
-          secretRoute(),
+          undefined,
           { params: secretReadParams(data) },
           signal,
         );
@@ -1135,9 +1214,9 @@ export const createServer = (
       if (name === AvailableTools.GetSecret) {
         const data = getSecretSchema.zod.parse(args);
 
-        const { secret } = await apiRequest<GetSecretResponse>(
+        const { secret } = await secretRequest<GetSecretResponse>(
           "GET",
-          secretRoute(data.secretName),
+          data.secretName,
           { params: secretReadParams(data) },
           signal,
         );
@@ -1338,23 +1417,19 @@ export const createServer = (
 
       const client = server.getClientVersion();
 
-      // a log entry that cannot be written must not turn a call that worked
+      // safeLog, so a failed write to the log cannot turn a call that worked
       // into a failure, or a client might repeat a write that already happened
-      try {
-        log({
-          level: { success: "info", denied: "warn", error: "error" }[outcome],
-          event: "tool_call",
-          tool: name,
-          outcome,
-          durationMs: Date.now() - startedAt,
-          actor,
-          client: client && { name: client.name, version: client.version },
-          arguments: auditedArguments(args),
-          ...(error && { error }),
-        });
-      } catch {
-        // there is nowhere left to report it
-      }
+      safeLog({
+        level: { success: "info", denied: "warn", error: "error" }[outcome],
+        event: "tool_call",
+        tool: name,
+        outcome,
+        durationMs: Date.now() - startedAt,
+        actor,
+        client: client && { name: client.name, version: client.version },
+        arguments: auditedArguments(args),
+        ...(error && { error }),
+      });
     };
 
     try {

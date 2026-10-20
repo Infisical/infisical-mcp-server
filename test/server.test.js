@@ -501,6 +501,62 @@ describe("writes that need approval", () => {
   }
 });
 
+describe("Infisical before v0.150.0, without the v4 secrets API", () => {
+  // no v4 routes, and v3 routes that only read the project and imports flag
+  // under their v3 names
+  const withoutV4 = (request) => {
+    if (request.path.startsWith("/api/v4/")) {
+      return [404, { message: `Route ${request.method}:${request.path} not found`, error: "Not Found" }];
+    }
+    if (!request.path.startsWith("/api/v3/secrets/raw")) return undefined;
+
+    const { workspaceId, include_imports, ...query } = request.query;
+    const { workspaceId: bodyWorkspaceId, ...body } = request.body ?? {};
+    if (!workspaceId && !bodyWorkspaceId) return [400, { message: "Missing project id" }];
+
+    return defaultResponse({
+      ...request,
+      path: request.path.replace("/api/v3/secrets/raw", "/api/v4/secrets"),
+      query: { ...query, includeImports: include_imports },
+      body,
+    });
+  };
+
+  test("falls back to the v3 routes, and stays on them", async (t) => {
+    const { call, logs, secretRequests } = await setup(t, { env: ALL_TOOLS, respond: withoutV4 });
+
+    const listed = JSON.parse(await call("list-secrets", SECRET_LOCATION));
+    await call("create-secret", { ...SECRET_LOCATION, secretName: "NEW_KEY", secretValue: SECRET_VALUE });
+
+    assert.equal(listed.imports[0].secretPath, "/shared");
+    assert.deepEqual(
+      secretRequests().map((request) => `${request.method} ${request.path}`),
+      ["GET /api/v4/secrets", "GET /api/v3/secrets/raw", "POST /api/v3/secrets/raw/NEW_KEY"],
+    );
+    const [, list, create] = secretRequests();
+    assert.equal(list.query.workspaceId, "project-1");
+    assert.equal(list.query.include_imports, "true");
+    assert.equal(create.body.workspaceId, "project-1");
+    assert.ok(!("projectId" in create.body));
+    assert.equal(logs.filter((entry) => entry.event === "secrets_api_fallback").length, 1);
+  });
+
+  test("does not fall back when v4 reports a secret that does not exist", async (t) => {
+    const { callError, secretRequests } = await setup(t, {
+      respond: ({ path }) =>
+        path.startsWith("/api/v4/secrets/")
+          ? [404, { message: "Secret with name 'MISSING' not found" }]
+          : undefined,
+    });
+
+    assert.match(
+      await callError("get-secret", { ...SECRET_LOCATION, secretName: "MISSING" }),
+      /404: Secret with name 'MISSING' not found/,
+    );
+    assert.equal(secretRequests().length, 1);
+  });
+});
+
 describe("projects, environments, folders and members", () => {
   test("list-projects filters by type, and omits the filter for all", async (t) => {
     const { call, secretRequests } = await setup(t);
