@@ -737,6 +737,18 @@ describe("errors", () => {
     assert.equal(secretRequests().length, 0);
   });
 
+  test("rejects a rename to a name no URL can address", async (t) => {
+    const { callError, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    for (const newSecretName of ["", ".", ".."]) {
+      assert.match(
+        await callError("update-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD", newSecretName }),
+        /Invalid arguments: newSecretName/,
+      );
+    }
+    assert.equal(secretRequests().length, 0);
+  });
+
   test("does not echo a submitted value when a write fails", async (t) => {
     const { callError, logs } = await setup(t, {
       env: ALL_TOOLS,

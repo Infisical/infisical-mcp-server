@@ -453,7 +453,8 @@ const updateSecretSchema = {
     projectId: z.string(),
     environmentSlug: z.string(),
     secretName: secretNameSchema,
-    newSecretName: z.string().optional(),
+    // a rename to such a name would leave the secret unreachable by these tools
+    newSecretName: secretNameSchema.optional(),
     secretValue: z.string().optional(),
     secretPath: z.string().default("/"),
   }),
