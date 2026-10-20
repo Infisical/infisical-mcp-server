@@ -267,6 +267,24 @@ const isRouteNotFound = (err: unknown) =>
   err.status === 404 &&
   (err.apiMessage === undefined || /^Route \S+ not found/.test(err.apiMessage));
 
+type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
+
+type RequestOptions = {
+  params?: Record<string, string | undefined>;
+  data?: Record<string, unknown>;
+};
+
+// where a secret lives, in the fields every secret route takes
+const secretLocation = (data: {
+  projectId: string;
+  environmentSlug: string;
+  secretPath: string;
+}) => ({
+  projectId: data.projectId,
+  environment: data.environmentSlug,
+  secretPath: data.secretPath,
+});
+
 // the v3 secret routes take the same fields as v4, with the project renamed
 const V3_FIELD_NAMES: Record<string, string> = {
   projectId: "workspaceId",
@@ -917,15 +935,9 @@ export const createServer = (
   };
 
   const apiRequest = async <T>(
-    method: "GET" | "POST" | "PATCH" | "DELETE",
+    method: HttpMethod,
     route: string,
-    {
-      params,
-      data,
-    }: {
-      params?: Record<string, string | undefined>;
-      data?: Record<string, unknown>;
-    },
+    { params, data }: RequestOptions,
     signal: AbortSignal,
   ) => {
     // a write may already have been applied when no response comes back, so
@@ -1000,15 +1012,9 @@ export const createServer = (
   let useV3SecretRoutes = false;
 
   const secretRequest = async <T>(
-    method: "GET" | "POST" | "PATCH" | "DELETE",
+    method: HttpMethod,
     secretName: string | undefined,
-    {
-      params,
-      data,
-    }: {
-      params?: Record<string, string | undefined>;
-      data?: Record<string, unknown>;
-    },
+    { params, data }: RequestOptions,
     signal: AbortSignal,
   ) => {
     const name =
@@ -1054,9 +1060,7 @@ export const createServer = (
     expandSecretReferences: boolean;
     includeImports: boolean;
   }) => ({
-    projectId: data.projectId,
-    environment: data.environmentSlug,
-    secretPath: data.secretPath,
+    ...secretLocation(data),
     expandSecretReferences: String(data.expandSecretReferences),
     // v4 reads includeImports, but read include_imports until v0.158.3, as v3
     // still does. both are sent, and each version ignores the one it does not
@@ -1117,9 +1121,7 @@ export const createServer = (
           data.secretName,
           {
             data: {
-              projectId: data.projectId,
-              environment: data.environmentSlug,
-              secretPath: data.secretPath,
+              ...secretLocation(data),
               secretValue: data.secretValue ?? "",
             },
           },
@@ -1145,11 +1147,7 @@ export const createServer = (
           "DELETE",
           data.secretName,
           {
-            data: {
-              projectId: data.projectId,
-              environment: data.environmentSlug,
-              secretPath: data.secretPath,
-            },
+            data: secretLocation(data),
           },
           signal,
         );
@@ -1174,9 +1172,7 @@ export const createServer = (
           data.secretName,
           {
             data: {
-              projectId: data.projectId,
-              environment: data.environmentSlug,
-              secretPath: data.secretPath,
+              ...secretLocation(data),
               newSecretName: data.newSecretName,
               // left undefined, it is not sent and the API keeps the value
               secretValue: data.secretValue,
