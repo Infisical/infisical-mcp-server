@@ -260,10 +260,9 @@ const isRouteNotFound = (err: unknown) =>
   err.status === 404 &&
   /^Route \S+ not found/.test(err.apiMessage ?? "");
 
-// the v3 secret routes take the same fields as v4, two of them renamed
+// the v3 secret routes take the same fields as v4, with the project renamed
 const V3_FIELD_NAMES: Record<string, string> = {
   projectId: "workspaceId",
-  includeImports: "include_imports",
 };
 
 const toV3Fields = <V>(fields: Record<string, V>) => {
@@ -1032,7 +1031,11 @@ export const createServer = (
     environment: data.environmentSlug,
     secretPath: data.secretPath,
     expandSecretReferences: String(data.expandSecretReferences),
+    // v4 reads includeImports, but read include_imports until v0.158.3, as v3
+    // still does. both are sent, and each version ignores the one it does not
+    // read
     includeImports: String(data.includeImports),
+    include_imports: String(data.includeImports),
     viewSecretValue: String(!env.INFISICAL_MASK_SECRET_VALUES),
   });
 

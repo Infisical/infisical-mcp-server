@@ -360,6 +360,23 @@ describe("reading secrets", () => {
     assert.equal(response.imports[0].secretPath, "/shared");
   });
 
+  test("list-secrets returns imports from v4 releases that read include_imports", async (t) => {
+    // v4 read the flag as include_imports until v0.158.3
+    const { call } = await setup(t, {
+      respond: (request) =>
+        request.path === "/api/v4/secrets"
+          ? defaultResponse({
+              ...request,
+              query: { ...request.query, includeImports: request.query.include_imports },
+            })
+          : undefined,
+    });
+
+    const response = JSON.parse(await call("list-secrets", SECRET_LOCATION));
+
+    assert.equal(response.imports[0].secretPath, "/shared");
+  });
+
   test("list-secrets returns values by default", async (t) => {
     const { call, secretRequests } = await setup(t);
 
