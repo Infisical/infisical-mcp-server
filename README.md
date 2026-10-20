@@ -167,7 +167,7 @@ Each release is published from GitHub Actions through npm trusted publishing, wi
 
 The package ships `npm-shrinkwrap.json`, so an install gets exactly the dependency versions the release was tested with, and `sbom.cdx.json`, a CycloneDX SBOM of those dependencies. The SBOM is also attached to each GitHub release.
 
-Releases follow semantic versioning. Until 1.0, a breaking change, such as a new default, ships in a new minor version, never in a patch release.
+Until 1.0, a change to a default ships in a new minor version, never in a patch release. Each release's notes list any change in behaviour.
 
 ### Reporting a vulnerability
 
