@@ -218,7 +218,8 @@ const setup = async (t, { env = {}, respond, options = {} } = {}) => {
 const parseResponse = (text) => JSON.parse(text.slice(text.indexOf("{")));
 
 const ALL_TOOLS = { INFISICAL_ENABLED_TOOLS: "all" };
-const UNMASKED = { INFISICAL_MASK_SECRET_VALUES: "false" };
+const READ_ONLY = { INFISICAL_ENABLED_TOOLS: READ_ONLY_TOOLS.join(",") };
+const MASKED = { INFISICAL_MASK_SECRET_VALUES: "true" };
 const SECRET_LOCATION = { projectId: "project-1", environmentSlug: "dev" };
 
 describe("configuration", () => {
@@ -229,16 +230,17 @@ describe("configuration", () => {
       ...env,
     });
 
-  test("defaults to the read-only tools, masked values and an audit log", () => {
+  // the hardening controls are opt-in, so an existing setup keeps working
+  test("defaults to every tool, unmasked values and an audit log", () => {
     const env = parse({});
-    assert.deepEqual([...env.INFISICAL_ENABLED_TOOLS].sort(), [...READ_ONLY_TOOLS].sort());
-    assert.equal(env.INFISICAL_MASK_SECRET_VALUES, true);
+    assert.equal(env.INFISICAL_ENABLED_TOOLS.length, 10);
+    assert.equal(env.INFISICAL_MASK_SECRET_VALUES, false);
     assert.equal(env.INFISICAL_AUDIT_LOG, true);
   });
 
-  test("treats a blank masking value as unset, so values stay masked", () => {
-    assert.equal(parse({ INFISICAL_MASK_SECRET_VALUES: " " }).INFISICAL_MASK_SECRET_VALUES, true);
-    assert.equal(parse({ INFISICAL_MASK_SECRET_VALUES: "FALSE" }).INFISICAL_MASK_SECRET_VALUES, false);
+  test("treats a blank masking value as unset", () => {
+    assert.equal(parse({ INFISICAL_MASK_SECRET_VALUES: " " }).INFISICAL_MASK_SECRET_VALUES, false);
+    assert.equal(parse({ INFISICAL_MASK_SECRET_VALUES: "TRUE" }).INFISICAL_MASK_SECRET_VALUES, true);
   });
 
   test("exposes every tool for all", () => {
@@ -246,10 +248,10 @@ describe("configuration", () => {
   });
 
   test("gives each parse its own tool list", () => {
-    parse({}).INFISICAL_ENABLED_TOOLS.push("delete-secret");
+    parse({}).INFISICAL_ENABLED_TOOLS.length = 0;
     parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length = 0;
 
-    assert.deepEqual([...parse({}).INFISICAL_ENABLED_TOOLS].sort(), [...READ_ONLY_TOOLS].sort());
+    assert.equal(parse({}).INFISICAL_ENABLED_TOOLS.length, 10);
     assert.equal(parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length, 10);
   });
 
@@ -282,8 +284,15 @@ describe("tool gating", () => {
     assert.equal(deleteSecret.annotations.destructiveHint, true);
   });
 
-  test("lists only tools that read by default", async (t) => {
+  test("lists every tool by default", async (t) => {
     const { client } = await setup(t);
+
+    const { tools } = await client.listTools();
+    assert.equal(tools.length, 10);
+  });
+
+  test("lists only tools that read under the read-only allowlist", async (t) => {
+    const { client } = await setup(t, { env: READ_ONLY });
 
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map((tool) => tool.name).sort(), [...READ_ONLY_TOOLS].sort());
@@ -294,7 +303,7 @@ describe("tool gating", () => {
   const INVALID_PARAMS = -32602;
 
   test("refuses a disabled tool before authenticating", async (t) => {
-    const { call, api, logs } = await setup(t);
+    const { call, api, logs } = await setup(t, { env: READ_ONLY });
 
     await assert.rejects(
       call("delete-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" }),
@@ -322,7 +331,7 @@ describe("tool gating", () => {
 
 describe("reading secrets", () => {
   test("list-secrets masks values and asks Infisical not to send them", async (t) => {
-    const { call, secretRequests } = await setup(t);
+    const { call, secretRequests } = await setup(t, { env: MASKED });
 
     const text = await call("list-secrets", SECRET_LOCATION);
 
@@ -347,8 +356,8 @@ describe("reading secrets", () => {
     assert.equal(response.imports[0].secretPath, "/shared");
   });
 
-  test("list-secrets returns values when masking is off", async (t) => {
-    const { call, secretRequests } = await setup(t, { env: UNMASKED });
+  test("list-secrets returns values by default", async (t) => {
+    const { call, secretRequests } = await setup(t);
 
     const response = JSON.parse(await call("list-secrets", SECRET_LOCATION));
 
@@ -358,7 +367,7 @@ describe("reading secrets", () => {
   });
 
   test("get-secret masks the value and passes its options through", async (t) => {
-    const { call, secretRequests } = await setup(t);
+    const { call, secretRequests } = await setup(t, { env: MASKED });
 
     const text = await call("get-secret", {
       ...SECRET_LOCATION,
@@ -377,8 +386,8 @@ describe("reading secrets", () => {
     assert.equal(parseResponse(text).secretValue, MASKED_VALUE);
   });
 
-  test("get-secret returns the value when masking is off", async (t) => {
-    const { call } = await setup(t, { env: UNMASKED });
+  test("get-secret returns the value by default", async (t) => {
+    const { call } = await setup(t);
 
     const text = await call("get-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" });
 
@@ -388,7 +397,7 @@ describe("reading secrets", () => {
 
 describe("writing secrets", () => {
   test("create-secret stores the value and masks it in the response", async (t) => {
-    const { call, secretRequests } = await setup(t, { env: ALL_TOOLS });
+    const { call, secretRequests } = await setup(t, { env: { ...ALL_TOOLS, ...MASKED } });
 
     const text = await call("create-secret", {
       ...SECRET_LOCATION,
@@ -426,7 +435,7 @@ describe("writing secrets", () => {
   });
 
   test("update-secret sends a new value and masks it in the response", async (t) => {
-    const { call, secretRequests } = await setup(t, { env: ALL_TOOLS });
+    const { call, secretRequests } = await setup(t, { env: { ...ALL_TOOLS, ...MASKED } });
 
     const text = await call("update-secret", {
       ...SECRET_LOCATION,
@@ -865,7 +874,7 @@ describe("authentication", () => {
 
 describe("audit log", () => {
   test("records who called which tool on what, and never a secret", async (t) => {
-    const { call, logs } = await setup(t, { env: { ...ALL_TOOLS, ...UNMASKED } });
+    const { call, logs } = await setup(t, { env: ALL_TOOLS });
 
     await call("create-secret", {
       ...SECRET_LOCATION,

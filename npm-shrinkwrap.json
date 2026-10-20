@@ -1,12 +1,12 @@
 {
   "name": "@infisical/mcp",
-  "version": "0.1.0",
+  "version": "0.0.25",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "@infisical/mcp",
-      "version": "0.1.0",
+      "version": "0.0.25",
       "license": "Apache-2.0",
       "dependencies": {
         "@infisical/sdk": "4.0.1",

@@ -1,6 +1,6 @@
 {
   "name": "@infisical/mcp",
-  "version": "0.1.0",
+  "version": "0.0.25",
   "main": "dist/index.js",
   "bin": "dist/index.js",
   "files": [

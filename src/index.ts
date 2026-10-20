@@ -40,13 +40,6 @@ enum AvailableTools {
 
 const ALL_TOOLS = Object.values(AvailableTools);
 
-// exposed when INFISICAL_ENABLED_TOOLS is unset; none of them change anything
-const READ_ONLY_TOOLS = [
-  AvailableTools.ListProjects,
-  AvailableTools.ListSecrets,
-  AvailableTools.GetSecret,
-];
-
 // the INFISICAL_ENABLED_TOOLS value that exposes every tool
 const ALL_TOOLS_KEYWORD = "all";
 
@@ -110,9 +103,9 @@ export const getEnvironmentVariables = (
         .trim()
         .optional()
         .transform((val, ctx) => {
-          // an empty value is an error, not the default. the lists are copied
-          // so a caller changing its env cannot change them for every server
-          if (val === undefined) return [...READ_ONLY_TOOLS];
+          // an empty value is an error, not "expose everything". the list is
+          // copied so a caller changing its env cannot change it for every server
+          if (val === undefined) return [...ALL_TOOLS];
 
           const requested = val
             .split(",")
@@ -144,14 +137,14 @@ export const getEnvironmentVariables = (
           if (!requested.length) {
             ctx.addIssue({
               code: z.ZodIssueCode.custom,
-              message: `INFISICAL_ENABLED_TOOLS was set but lists no tools. Omit it for the read-only default, or set it to "${ALL_TOOLS_KEYWORD}" to expose every tool.`,
+              message: `INFISICAL_ENABLED_TOOLS was set but lists no tools. Omit it, or set it to "${ALL_TOOLS_KEYWORD}", to expose every tool.`,
             });
             return z.NEVER;
           }
 
           return requested as AvailableTools[];
         }),
-      INFISICAL_MASK_SECRET_VALUES: stringBoolean(true),
+      INFISICAL_MASK_SECRET_VALUES: stringBoolean(false),
       INFISICAL_AUDIT_LOG: stringBoolean(true),
     })
     // validate the env vars on startup to avoid runtime errors

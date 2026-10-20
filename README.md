@@ -14,7 +14,7 @@ In order to use the MCP server, you must first set the environment variables req
 - `INFISICAL_TOKEN`: An access token for authentication. This can be both a personal access token or a machine identity access token. Required when `INFISICAL_AUTH_METHOD` is `access-token`.
 - `INFISICAL_HOST_URL`: **Optionally** set a custom host URL. This is useful if you're self-hosting Infisical or you're on dedicated infrastructure. Defaults to `https://app.infisical.com`. A self-hosted instance must run Infisical v0.150.0 or later.
 
-By default the server only exposes the tools that read, masks secret values, and logs each tool call to stderr. See [Limiting what the server exposes](#limiting-what-the-server-exposes) and [Audit log](#audit-log) to change these.
+By default every tool is exposed and secret values are returned, as in earlier versions. [Limiting what the server exposes](#limiting-what-the-server-exposes) explains how to restrict both, which we recommend, and [Audit log](#audit-log) covers what the server records.
 
 To run the Infisical MCP server using npx, use the following command:
 
@@ -64,42 +64,45 @@ Add the following to your `claude_desktop_config.json`. See [here](https://model
 
 ## Available tools
 
-| Tool                        | Description                             | Enabled by default |
-| --------------------------- | --------------------------------------- | ------------------ |
-| `create-secret`             | Create a new secret                     | No                 |
-| `delete-secret`             | Delete a secret                         | No                 |
-| `update-secret`             | Update a secret                         | No                 |
-| `list-secrets`              | Lists all secrets                       | Yes                |
-| `get-secret`                | Get a single secret                     | Yes                |
-| `create-project`            | Create a new project                    | No                 |
-| `create-environment`        | Create a new environment                | No                 |
-| `create-folder`             | Create a new folder                     | No                 |
-| `invite-members-to-project` | Invite one or more members to a project | No                 |
-| `list-projects`             | List all projects                       | Yes                |
+| Tool                        | Description                             | Read-only |
+| --------------------------- | --------------------------------------- | --------- |
+| `create-secret`             | Create a new secret                     | No        |
+| `delete-secret`             | Delete a secret                         | No        |
+| `update-secret`             | Update a secret                         | No        |
+| `list-secrets`              | Lists all secrets                       | Yes       |
+| `get-secret`                | Get a single secret                     | Yes       |
+| `create-project`            | Create a new project                    | No        |
+| `create-environment`        | Create a new environment                | No        |
+| `create-folder`             | Create a new folder                     | No        |
+| `invite-members-to-project` | Invite one or more members to a project | No        |
+| `list-projects`             | List all projects                       | Yes       |
 
 ## Limiting what the server exposes
 
-The server starts locked down: it exposes only the tools that read, and masks secret values. Two optional variables change that.
+Two optional variables restrict the server. Both default to the behaviour of earlier versions, so existing setups keep working. We recommend setting both wherever the model does not need to change anything or read secret values.
 
-- `INFISICAL_ENABLED_TOOLS`: a comma-separated allowlist of tools to expose, using the tool names from the table above. Defaults to `list-projects,list-secrets,get-secret`. Set it to `all` to expose every tool, or list the ones you need, for example `list-projects,list-secrets,get-secret,create-secret`. Tools left out are hidden from `tools/list` and refused if called. An unknown name fails at startup, and so does an empty value.
-- `INFISICAL_MASK_SECRET_VALUES`: `true` or `false`, case-insensitive. Defaults to `true`, which replaces secret values in tool responses with `<masked>`. For `list-secrets` and `get-secret` it also asks Infisical not to send the values at all, so they never reach the server. Secret names, paths, and other metadata are still returned. Set it to `false` only if the model needs to read secret values.
+- `INFISICAL_ENABLED_TOOLS`: a comma-separated allowlist of tools to expose, using the tool names from the table above. Omit it, or set it to `all`, to expose every tool. For a read-only server, list the read-only tools: `list-projects,list-secrets,get-secret`. Tools left out are hidden from `tools/list` and refused if called. An unknown name fails at startup, and so does an empty value.
+- `INFISICAL_MASK_SECRET_VALUES`: `true` or `false`, case-insensitive. Defaults to `false`. When `true`, secret values in tool responses are replaced with `<masked>`, and `list-secrets` and `get-secret` ask Infisical not to send the values at all, so they never reach the server or the model. Secret names, paths, and other metadata are still returned.
 
-Scope the machine identity to only the projects and environments the server needs, rather than using a token with broader access than the exposed tools require.
-
-### Upgrading from 0.0.x
-
-Version 0.1.0 changes both defaults. Earlier versions exposed every tool and returned secret values unless told otherwise. To keep that behaviour, set both variables explicitly:
+A hardened configuration sets both:
 
 ```json
 "env": {
-  "INFISICAL_ENABLED_TOOLS": "all",
-  "INFISICAL_MASK_SECRET_VALUES": "false"
+  "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID": "<machine-identity-universal-auth-client-id>",
+  "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET": "<machine-identity-universal-auth-client-secret>",
+  "INFISICAL_ENABLED_TOOLS": "list-projects,list-secrets,get-secret",
+  "INFISICAL_MASK_SECRET_VALUES": "true"
 }
 ```
 
-A tool that fails while running, for example because Infisical refused the request, now returns a result with `isError` set and the reason as its text, instead of a JSON-RPC error. Calling an unknown or disabled tool is still a JSON-RPC error.
+Scope the machine identity to only the projects and environments the server needs, rather than using a token with broader access than the exposed tools require.
 
-The secret tools now use Infisical's v4 secrets API, so a self-hosted instance must run v0.150.0 or later.
+### Upgrading
+
+Existing configurations keep working. Two things behave differently from earlier versions:
+
+- A tool that fails while running, for example because Infisical refused the request, returns a result with `isError` set and the reason as its text, instead of a JSON-RPC error. Calling an unknown or disabled tool is still a JSON-RPC error.
+- The secret tools use Infisical's v4 secrets API, so a self-hosted instance must run v0.150.0 or later.
 
 ## Audit log
 
@@ -154,7 +157,7 @@ The server enforces no permissions of its own. It can do whatever its identity c
 `npx -y @infisical/mcp` runs the latest release. To control when upgrades happen, pin a version in the client's configuration:
 
 ```json
-"args": ["-y", "@infisical/mcp@0.1.0"]
+"args": ["-y", "@infisical/mcp@0.0.25"]
 ```
 
 To roll back, pin the previous version and restart the client. Release notes are on the repository's [Releases](https://github.com/Infisical/infisical-mcp-server/releases) page.
@@ -163,7 +166,7 @@ Each release is published from GitHub Actions through npm trusted publishing, wi
 
 The package ships `npm-shrinkwrap.json`, so an install gets exactly the dependency versions the release was tested with, and `sbom.cdx.json`, a CycloneDX SBOM of those dependencies. The SBOM is also attached to each GitHub release.
 
-Releases follow semantic versioning. While the version is below 1.0, a minor release, such as 0.1.0, may change defaults or behaviour, and a patch release only fixes problems.
+Releases follow semantic versioning. Until 1.0, a breaking change, such as a new default, ships in a new minor version, never in a patch release.
 
 ### Reporting a vulnerability
 
