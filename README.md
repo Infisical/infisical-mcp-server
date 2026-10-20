@@ -167,6 +167,8 @@ Each release is published from GitHub Actions through npm trusted publishing, wi
 
 The package ships `npm-shrinkwrap.json`, so an install gets exactly the dependency versions the release was tested with, and `sbom.cdx.json`, a CycloneDX SBOM of those dependencies. The SBOM is also attached to each GitHub release.
 
+Every pull request is checked by Socket for risky dependency changes, and by CodeQL for security issues in the code and workflows. CI fails on a high or critical advisory in a runtime dependency, or a package whose registry signature does not verify.
+
 Until 1.0, a change to a default ships in a new minor version, never in a patch release. Each release's notes list any change in behaviour.
 
 ### Reporting a vulnerability
