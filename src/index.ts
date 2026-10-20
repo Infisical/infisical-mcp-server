@@ -850,14 +850,11 @@ export const createServer = (
   let isAuthenticated = false;
   let renewLoginAt: number | undefined;
   let pendingLogin: Promise<void> | undefined;
-  let loginAttempts = 0;
   const infisicalSdk = new InfisicalSDK({
     siteUrl: env.INFISICAL_HOST_URL,
   });
 
   const logIn = async () => {
-    loginAttempts++;
-
     switch (env.INFISICAL_AUTH_METHOD) {
       case InfisicalAuthMethod.UniversalAuth: {
         const requestedAt = Date.now();
@@ -1407,24 +1404,32 @@ export const createServer = (
 
   // a universal auth token Infisical rejects, because it was revoked or ran
   // out of uses, is replaced by logging in again, once. a 401 means the call
-  // was refused before it did anything, so repeating it is safe. a token from
-  // a login made during this call is not retried, since that would not help
+  // was refused before it did anything, so repeating it is safe. a call that
+  // began without a token got a fresh one from its own login, and is not
+  // retried, since logging in again would not help
   const callToolWithRelogin = async (
     req: CallToolRequest,
     signal: AbortSignal,
   ) => {
-    const attemptsBefore = loginAttempts;
+    const tokenBefore = isAuthenticated
+      ? infisicalSdk.auth().getAccessToken()
+      : null;
 
     try {
       return await callTool(req, signal);
     } catch (err) {
       const canLogInAgain =
         env.INFISICAL_AUTH_METHOD === InfisicalAuthMethod.UniversalAuth &&
-        loginAttempts === attemptsBefore;
+        tokenBefore !== null;
 
       if (!canLogInAgain || !isUnauthorized(err)) throw err;
 
-      isAuthenticated = false;
+      // calls that sent the same token fail together. the first to get here
+      // drops it, and the rest find a new one, or the login under way for it
+      if (infisicalSdk.auth().getAccessToken() === tokenBefore) {
+        isAuthenticated = false;
+      }
+
       return callTool(req, signal);
     }
   };

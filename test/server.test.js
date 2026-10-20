@@ -996,6 +996,20 @@ describe("authentication", () => {
     assert.equal(secretRequests().length, 3);
   });
 
+  test("recovers every call that arrives together with a revoked token", async (t) => {
+    const tokens = revocableTokens();
+    const { call, api } = await setup(t, { respond: tokens.respond });
+
+    await call("list-secrets", SECRET_LOCATION);
+    tokens.revoke();
+    await Promise.all(
+      Array.from({ length: 3 }, () => call("list-secrets", SECRET_LOCATION)),
+    );
+
+    // one login for all three, not one each
+    assert.equal(countLogins(api), 2);
+  });
+
   test("logs in again when an SDK-backed tool gets a 401", async (t) => {
     const tokens = revocableTokens();
     const { call, api } = await setup(t, { env: ALL_TOOLS, respond: tokens.respond });
