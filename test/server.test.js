@@ -815,6 +815,63 @@ describe("requests to Infisical", () => {
     await assert.rejects(pending);
     await waitFor(() => secretRequests()[0].closed);
   });
+
+  const NEW_SECRET = { ...SECRET_LOCATION, secretName: "NEW_KEY", secretValue: SECRET_VALUE };
+  // the login is a POST too, so match the secret route
+  const isSecretWrite = ({ method, path }) =>
+    method === "POST" && path.startsWith("/api/v4/secrets/");
+
+  test("does not resend a write that got no response", async (t) => {
+    const { callError, secretRequests } = await setup(t, {
+      env: ALL_TOOLS,
+      options: FAST,
+      respond: (request) => (isSecretWrite(request) ? HANG : undefined),
+    });
+
+    assert.match(await callError("create-secret", NEW_SECRET), /timeout of 50ms exceeded/);
+    // Infisical may have applied it, so sending it again could apply it twice
+    assert.equal(secretRequests().length, 1);
+  });
+
+  test("retries a rate-limited write", async (t) => {
+    let limited = 1;
+    const { call, secretRequests } = await setup(t, {
+      env: ALL_TOOLS,
+      options: FAST,
+      respond: (request) =>
+        isSecretWrite(request) && limited-- > 0
+          ? [429, { message: "Too many requests" }]
+          : undefined,
+    });
+
+    await call("create-secret", NEW_SECRET);
+
+    assert.equal(secretRequests().length, 2);
+  });
+
+  test("lets a write finish, and records it, when the client cancels", async (t) => {
+    const { client, logs, secretRequests } = await setup(t, {
+      env: ALL_TOOLS,
+      respond: (request) => (isSecretWrite(request) ? HANG : undefined),
+    });
+    const controller = new AbortController();
+
+    const pending = client.callTool(
+      { name: "create-secret", arguments: NEW_SECRET },
+      undefined,
+      { signal: controller.signal },
+    );
+    await waitFor(() => secretRequests().length === 1);
+    controller.abort();
+    await assert.rejects(pending);
+
+    const [request] = secretRequests();
+    assert.ok(!request.closed);
+    request.respond(200, { secret: { secretKey: "NEW_KEY", secretValue: SECRET_VALUE } });
+
+    await waitFor(() => logs.length === 1);
+    assert.equal(logs[0].outcome, "success");
+  });
 });
 
 describe("authentication", () => {

@@ -923,6 +923,12 @@ export const createServer = (
     },
     signal: AbortSignal,
   ) => {
+    // a write may already have been applied when no response comes back, so
+    // it is never resent then, only after a 429, which means nothing was done.
+    // nor is it abandoned when the client cancels, so the audit log records
+    // what actually happened
+    const isRead = method === "GET";
+
     for (let attempt = 0; ; attempt++) {
       try {
         const res = await axios.request<T>({
@@ -930,7 +936,7 @@ export const createServer = (
           url: apiUrl(route),
           params,
           data,
-          signal,
+          signal: isRead ? signal : undefined,
           timeout: requestTimeoutMs,
           headers: {
             Authorization: `Bearer ${infisicalSdk.auth().getAccessToken()}`,
@@ -944,7 +950,8 @@ export const createServer = (
         // a cancelled call also arrives without a response, but is not retried
         const isRetryable =
           !axios.isCancel(err) &&
-          (err.response === undefined || err.response.status === 429);
+          (err.response?.status === 429 ||
+            (isRead && err.response === undefined));
 
         if (isRetryable && attempt < API_MAX_RETRIES) {
           const delay = retryDelayMs * 2 ** attempt;
