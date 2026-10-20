@@ -8,7 +8,11 @@ const assert = require("node:assert/strict");
 const http = require("node:http");
 const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
 const { InMemoryTransport } = require("@modelcontextprotocol/sdk/inMemory.js");
-const { createServer, getEnvironmentVariables } = require("../dist/index.js");
+const {
+  createServer,
+  getEnvironmentVariables,
+  getStartupLogEntry,
+} = require("../dist/index.js");
 
 const SECRET_VALUE = "s3cr3t-value";
 const CLIENT_SECRET = "universal-auth-client-secret";
@@ -988,6 +992,31 @@ describe("audit log", () => {
 
     assert.match(text, /Secret created successfully/);
     assert.equal(secretRequests().length, 1);
+  });
+
+  test("warns at startup about each hardening control left off", () => {
+    const entry = getStartupLogEntry(
+      getEnvironmentVariables({ INFISICAL_AUTH_METHOD: "access-token", INFISICAL_TOKEN: "token" }),
+    );
+
+    assert.equal(entry.level, "warn");
+    assert.equal(entry.warnings.length, 2);
+    assert.match(entry.warnings[0], /INFISICAL_MASK_SECRET_VALUES=true/);
+    assert.match(entry.warnings[1], /create-secret, delete-secret, update-secret/);
+  });
+
+  test("starts without warnings when both hardening controls are on", () => {
+    const entry = getStartupLogEntry(
+      getEnvironmentVariables({
+        INFISICAL_AUTH_METHOD: "access-token",
+        INFISICAL_TOKEN: "token",
+        ...READ_ONLY,
+        ...MASKED,
+      }),
+    );
+
+    assert.equal(entry.level, "info");
+    assert.ok(!("warnings" in entry));
   });
 
   test("can be turned off", async (t) => {

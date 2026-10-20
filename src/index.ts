@@ -1458,6 +1458,43 @@ export const createServer = (
   return server;
 };
 
+// the hardening controls are opt-in, so the startup entry warns when they are
+// off, where an operator reading the client's log will see it
+export const getStartupLogEntry = (env: Env) => {
+  const warnings: string[] = [];
+
+  if (!env.INFISICAL_MASK_SECRET_VALUES) {
+    warnings.push(
+      "Secret values are returned to the model. Set INFISICAL_MASK_SECRET_VALUES=true to mask them.",
+    );
+  }
+
+  const mutatingTools = allCapabilities
+    .filter((capability) => !capability.annotations.readOnlyHint)
+    .map((capability) => capability.name)
+    .filter((name) => env.INFISICAL_ENABLED_TOOLS.includes(name));
+
+  if (mutatingTools.length) {
+    warnings.push(
+      `Tools that change data are enabled: ${mutatingTools.join(", ")}. Set INFISICAL_ENABLED_TOOLS to leave them out.`,
+    );
+  }
+
+  return {
+    level: warnings.length ? "warn" : "info",
+    event: "server_started",
+    message: "Infisical MCP Server running on stdio",
+    version: packageJson.version,
+    // origin only, so a URL with credentials or a path in it is not echoed
+    host: new URL(env.INFISICAL_HOST_URL).origin,
+    authMethod: env.INFISICAL_AUTH_METHOD,
+    enabledTools: env.INFISICAL_ENABLED_TOOLS,
+    maskSecretValues: env.INFISICAL_MASK_SECRET_VALUES,
+    auditLog: env.INFISICAL_AUDIT_LOG,
+    ...(warnings.length && { warnings }),
+  };
+};
+
 // serve over stdio when run directly, rather than imported by the tests
 if (require.main === module) {
   const env = getEnvironmentVariables();
@@ -1465,17 +1502,6 @@ if (require.main === module) {
 
   (async () => {
     await server.connect(new StdioServerTransport());
-    writeLog({
-      level: "info",
-      event: "server_started",
-      message: "Infisical MCP Server running on stdio",
-      version: packageJson.version,
-      // origin only, so a URL with credentials or a path in it is not echoed
-      host: new URL(env.INFISICAL_HOST_URL).origin,
-      authMethod: env.INFISICAL_AUTH_METHOD,
-      enabledTools: env.INFISICAL_ENABLED_TOOLS,
-      maskSecretValues: env.INFISICAL_MASK_SECRET_VALUES,
-      auditLog: env.INFISICAL_AUDIT_LOG,
-    });
+    writeLog(getStartupLogEntry(env));
   })();
 }
