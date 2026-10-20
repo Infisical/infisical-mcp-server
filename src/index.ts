@@ -254,11 +254,13 @@ class ApiRequestError extends Error {
 }
 
 // Infisical, like Fastify's own default, answers a route it does not have
-// with "Route GET:/api/v4/secrets?... not found"
+// with "Route GET:/api/v4/secrets?... not found". standalone images up to
+// v0.100.0 hand unknown paths to the frontend instead, which sends an HTML
+// 404 with no message. a 404 for a missing secret always carries one
 const isRouteNotFound = (err: unknown) =>
   err instanceof ApiRequestError &&
   err.status === 404 &&
-  /^Route \S+ not found/.test(err.apiMessage ?? "");
+  (err.apiMessage === undefined || /^Route \S+ not found/.test(err.apiMessage));
 
 // the v3 secret routes take the same fields as v4, with the project renamed
 const V3_FIELD_NAMES: Record<string, string> = {
@@ -1001,13 +1003,16 @@ export const createServer = (
       } catch (err) {
         if (!isRouteNotFound(err)) throw err;
 
-        useV3SecretRoutes = true;
-        safeLog({
-          level: "warn",
-          event: "secrets_api_fallback",
-          message:
-            "Infisical has no v4 secrets API, so the secret tools use the deprecated v3 routes. Upgrade to v0.150.0 or later.",
-        });
+        // calls already in flight can each land here; log the switch once
+        if (!useV3SecretRoutes) {
+          useV3SecretRoutes = true;
+          safeLog({
+            level: "warn",
+            event: "secrets_api_fallback",
+            message:
+              "Infisical has no v4 secrets API, so the secret tools use the deprecated v3 routes. Upgrade to v0.150.0 or later.",
+          });
+        }
       }
     }
 

@@ -142,15 +142,22 @@ const startApi = async (respond) => {
       };
       requests.push(request);
 
+      // a string payload is sent as an HTML page, as a web server's 404 is
+      const send = (status, payload) => {
+        const isHtml = typeof payload === "string";
+        res.writeHead(status, { "content-type": isHtml ? "text/html" : "application/json" });
+        res.end(isHtml ? payload : JSON.stringify(payload));
+      };
+
       const response = respond?.(request) ?? defaultResponse(request);
       if (response === HANG) {
-        res.on("close", () => (request.closed = true));
+        // a test can still answer it later, unless the client hangs up first
+        request.respond = send;
+        res.on("close", () => (request.closed = !res.writableEnded));
         return;
       }
 
-      const [status, payload] = response;
-      res.writeHead(status, { "content-type": "application/json" });
-      res.end(JSON.stringify(payload));
+      send(...response);
     });
   });
 
@@ -559,6 +566,31 @@ describe("Infisical before v0.150.0, without the v4 secrets API", () => {
     assert.equal(list.query.include_imports, "true");
     assert.equal(create.body.workspaceId, "project-1");
     assert.ok(!("projectId" in create.body));
+    assert.equal(logs.filter((entry) => entry.event === "secrets_api_fallback").length, 1);
+  });
+
+  test("falls back when the v4 route gets a web server's HTML 404", async (t) => {
+    // standalone images up to v0.100.0 hand unknown paths to the frontend
+    const { call, secretRequests } = await setup(t, {
+      respond: (request) =>
+        request.path.startsWith("/api/v4/")
+          ? [404, "<!DOCTYPE html><title>404: This page could not be found</title>"]
+          : withoutV4(request),
+    });
+
+    const listed = JSON.parse(await call("list-secrets", SECRET_LOCATION));
+
+    assert.equal(listed.secrets[0].secretKey, "DB_PASSWORD");
+    assert.equal(secretRequests()[1].path, "/api/v3/secrets/raw");
+  });
+
+  test("logs the switch once when calls arrive together", async (t) => {
+    const { call, logs } = await setup(t, { respond: withoutV4 });
+
+    await Promise.all(
+      Array.from({ length: 5 }, () => call("list-secrets", SECRET_LOCATION)),
+    );
+
     assert.equal(logs.filter((entry) => entry.event === "secrets_api_fallback").length, 1);
   });
 
