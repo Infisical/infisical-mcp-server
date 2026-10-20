@@ -6,6 +6,9 @@
 const { describe, test } = require("node:test");
 const assert = require("node:assert/strict");
 const http = require("node:http");
+const path = require("node:path");
+const readline = require("node:readline");
+const { spawn } = require("node:child_process");
 const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
 const { InMemoryTransport } = require("@modelcontextprotocol/sdk/inMemory.js");
 const {
@@ -1186,5 +1189,53 @@ describe("audit log", () => {
     await call("list-secrets", SECRET_LOCATION);
 
     assert.equal(logs.length, 0);
+  });
+});
+
+// the stdio entry point only runs as its own process, so this one test
+// starts the built server the way an MCP client does
+describe("the stdio server", () => {
+  test("keeps serving after the client closes its stderr", async (t) => {
+    const api = await startApi();
+    t.after(() => api.close());
+
+    const child = spawn(process.execPath, [path.join(__dirname, "../dist/index.js")], {
+      env: {
+        PATH: process.env.PATH,
+        INFISICAL_AUTH_METHOD: "access-token",
+        INFISICAL_TOKEN: "token",
+        INFISICAL_HOST_URL: api.url,
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    t.after(() => child.kill());
+
+    const responses = new Map();
+    readline.createInterface({ input: child.stdout }).on("line", (line) => {
+      const message = JSON.parse(line);
+      responses.get(message.id)?.(message);
+    });
+    const request = (id, method, params = {}) =>
+      new Promise((resolve, reject) => {
+        responses.set(id, resolve);
+        child.once("exit", (code) => reject(new Error(`server exited with ${code}`)));
+        child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      });
+
+    // the client stops reading stderr once the server starts logging to it
+    await new Promise((resolve) => child.stderr.once("data", resolve));
+    child.stderr.destroy();
+
+    await request(1, "initialize", {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "test-client", version: "1.0.0" },
+    });
+    child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" })}\n`);
+    // writes an audit entry to the closed stderr
+    await request(2, "tools/call", { name: "list-secrets", arguments: SECRET_LOCATION });
+    const { result } = await request(3, "tools/list");
+
+    assert.equal(result.tools.length, 10);
   });
 });

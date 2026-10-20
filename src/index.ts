@@ -1539,6 +1539,10 @@ export const getStartupLogEntry = (env: Env) => {
 
 // serve over stdio when run directly, rather than imported by the tests
 if (require.main === module) {
+  // logs are best effort. a client that closes its end of stderr makes the
+  // next write fail with EPIPE, which with no listener crashes the server
+  process.stderr.on("error", () => {});
+
   const env = getEnvironmentVariables();
   const server = createServer(env);
 
