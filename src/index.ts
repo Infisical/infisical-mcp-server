@@ -961,8 +961,13 @@ export const createServer = (
         // config and the bearer token with it
         if (!err.response) throw new Error(err.message);
 
-        const apiMessage = (err.response.data as { message?: string })
+        // a 422 carries its validation issues as an array in message
+        const message = (err.response.data as { message?: unknown } | undefined)
           ?.message;
+        const apiMessage =
+          message === undefined || typeof message === "string"
+            ? message
+            : JSON.stringify(message);
         throw new ApiRequestError(
           `Infisical API returned ${err.response.status}: ${apiMessage ?? err.message}`,
           err.response.status,

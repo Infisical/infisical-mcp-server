@@ -728,6 +728,26 @@ describe("errors", () => {
     assert.equal(logs[0].outcome, "error");
   });
 
+  test("shows the reasons for a validation failure", async (t) => {
+    // Infisical sends a 422's validation issues as an array in message
+    const { callError } = await setup(t, {
+      env: ALL_TOOLS,
+      respond: ({ method, path }) =>
+        method === "POST" && path.startsWith("/api/v4/secrets/")
+          ? [422, {
+              statusCode: 422,
+              error: "ValidationFailure",
+              message: [{ code: "custom", message: "Secret name cannot contain colons", path: ["secretName"] }],
+            }]
+          : undefined,
+    });
+
+    const text = await callError("create-secret", { ...SECRET_LOCATION, secretName: "DB:URL", secretValue: SECRET_VALUE });
+
+    assert.match(text, /Infisical API returned 422: .*Secret name cannot contain colons/);
+    assert.ok(!text.includes("[object Object]"));
+  });
+
   test("surfaces a list-projects failure as a tool error", async (t) => {
     const { callError } = await setup(t, {
       respond: ({ path }) =>
