@@ -947,6 +947,62 @@ describe("requests to Infisical", () => {
     await waitFor(() => logs.length === 1);
     assert.equal(logs[0].outcome, "success");
   });
+
+  // starts a call, cancels it once its first request reaches the API, and
+  // waits for the server to finish with it
+  const cancelAfterFirstRequest = async ({ client, logs }, name, args, isRequest, api) => {
+    const controller = new AbortController();
+    const pending = client.callTool({ name, arguments: args }, undefined, { signal: controller.signal });
+    await waitFor(() => api.requests.some(isRequest));
+    controller.abort();
+    await assert.rejects(pending);
+    return api.requests.find(isRequest);
+  };
+
+  test("does not log in again and resend a cancelled write that got a 401", async (t) => {
+    const context = await setup(t, {
+      env: ALL_TOOLS,
+      respond: (request) => (isSecretWrite(request) ? HANG : undefined),
+    });
+    await context.call("list-secrets", SECRET_LOCATION);
+
+    const write = await cancelAfterFirstRequest(context, "create-secret", NEW_SECRET, isSecretWrite, context.api);
+    // refused before anything was applied, so a resend would be a new write
+    write.respond(401, { message: "Token revoked" });
+    await waitFor(() => context.logs.length === 2);
+
+    assert.equal(context.api.requests.filter(isSecretWrite).length, 1);
+    assert.equal(context.api.requests.filter((request) => request.path.includes("/auth/")).length, 1);
+  });
+
+  test("does not resend a rate-limited write after the client cancels", async (t) => {
+    const context = await setup(t, {
+      env: ALL_TOOLS,
+      options: { retryDelayMs: 200 },
+      respond: (request) => (isSecretWrite(request) ? [429, { message: "Too many requests" }] : undefined),
+    });
+
+    await cancelAfterFirstRequest(context, "create-secret", NEW_SECRET, isSecretWrite, context.api);
+    await waitFor(() => context.logs.length === 1);
+    // past the backoff, when a resend would have gone out
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    assert.equal(context.api.requests.filter(isSecretWrite).length, 1);
+  });
+
+  test("stops waiting to retry a read when the client cancels", async (t) => {
+    const context = await setup(t, {
+      options: { retryDelayMs: 1000 },
+      respond: (request) => (isListRequest(request) ? [429, { message: "Too many requests" }] : undefined),
+    });
+
+    await cancelAfterFirstRequest(context, "list-secrets", SECRET_LOCATION, isListRequest, context.api);
+    const cancelledAt = Date.now();
+    await waitFor(() => context.logs.length === 1);
+
+    // well inside the first backoff of about a second
+    assert.ok(Date.now() - cancelledAt < 500, `took ${Date.now() - cancelledAt}ms`);
+  });
 });
 
 describe("authentication", () => {

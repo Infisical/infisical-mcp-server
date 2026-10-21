@@ -8,6 +8,7 @@ import type {
 import fs from "fs";
 import axios from "axios";
 import path from "path";
+import { setTimeout as sleep } from "timers/promises";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -296,6 +297,12 @@ const toV3Fields = <V>(fields: Record<string, V>) => {
 
 const isUnauthorized = (err: unknown) =>
   err instanceof ApiRequestError && err.status === 401;
+
+// once the client cancels a call, nothing new is sent for it: not a resend,
+// a retry after logging in again, or the same request on a fallback route
+const throwIfCancelled = (signal?: AbortSignal) => {
+  if (signal?.aborted) throw new Error("The client cancelled the call");
+};
 
 type LogEntry = Record<string, unknown>;
 
@@ -922,11 +929,13 @@ export const createServer = (
   ) => {
     // a write may already have been applied when no response comes back, so
     // it is never resent then, only after a 429, which means nothing was done.
-    // nor is it abandoned when the client cancels, so the audit log records
-    // what actually happened
+    // nor is a write in flight abandoned when the client cancels, so the audit
+    // log records what actually happened
     const isRead = method === "GET";
 
     for (let attempt = 0; ; attempt++) {
+      throwIfCancelled(signal);
+
       try {
         const res = await axios.request<T>({
           method,
@@ -953,7 +962,11 @@ export const createServer = (
         if (isRetryable && attempt < API_MAX_RETRIES) {
           const delay = retryDelayMs * 2 ** attempt;
           const jitter = (Math.random() * 2 - 1) * delay * 0.2;
-          await new Promise((resolve) => setTimeout(resolve, delay + jitter));
+          try {
+            await sleep(delay + jitter, undefined, { signal });
+          } catch {
+            throwIfCancelled(signal);
+          }
           continue;
         }
 
@@ -1445,6 +1458,8 @@ export const createServer = (
         isAuthenticated = false;
       }
 
+      // checked before logging in, which would also be wasted
+      throwIfCancelled(signal);
       return callTool(req, signal);
     }
   };
