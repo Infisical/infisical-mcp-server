@@ -610,6 +610,31 @@ describe("Infisical before v0.150.0, without the v4 secrets API", () => {
     assert.equal(secretRequests()[1].path, "/api/v3/secrets/raw");
   });
 
+  test("goes back to v4 after a 404 page that may have come from a proxy", async (t) => {
+    // a 404 page with no API message is what old standalone images send, but
+    // a proxy in front of a current Infisical can send one too
+    let pageSent = false;
+    const { call, logs, secretRequests } = await setup(t, {
+      respond: (request) => {
+        if (request.path.startsWith("/api/v4/") && !pageSent) {
+          pageSent = true;
+          return [404, "<!DOCTYPE html><title>404 Not Found</title>"];
+        }
+        return request.path.startsWith("/api/v3/") ? withoutV4(request) : undefined;
+      },
+    });
+
+    await call("list-secrets", SECRET_LOCATION);
+    await call("list-secrets", SECRET_LOCATION);
+
+    assert.deepEqual(
+      secretRequests().map((request) => request.path),
+      ["/api/v4/secrets", "/api/v3/secrets/raw", "/api/v4/secrets"],
+    );
+    const [fallback] = logs.filter((entry) => entry.event === "secrets_api_fallback");
+    assert.match(fallback.message, /proxy/);
+  });
+
   test("logs the switch once when calls arrive together", async (t) => {
     const { call, logs } = await setup(t, { respond: withoutV4 });
 

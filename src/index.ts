@@ -1072,8 +1072,11 @@ export const createServer = (
   //
   // self-hosted versions before v0.150.0 have no v4 secrets API. the first
   // time Infisical says the v4 route does not exist, switch to the v3 routes
-  // for the rest of the session
+  // for the rest of the session. a 404 page with no API message, which is
+  // how the oldest images answer, could also come from a proxy in front of a
+  // current Infisical, so it only sends that one call to the v3 route
   let useV3SecretRoutes = false;
+  let loggedV3Fallback = false;
 
   const secretRequest = async <T>(
     method: HttpMethod,
@@ -1095,14 +1098,18 @@ export const createServer = (
       } catch (err) {
         if (!isRouteNotFound(err)) throw err;
 
-        // calls already in flight can each land here; log the switch once
-        if (!useV3SecretRoutes) {
-          useV3SecretRoutes = true;
+        const saidByInfisical = (err as ApiRequestError).apiMessage !== undefined;
+        if (saidByInfisical) useV3SecretRoutes = true;
+
+        // calls already in flight can each land here; log the fallback once
+        if (!loggedV3Fallback) {
+          loggedV3Fallback = true;
           safeLog({
             level: "warn",
             event: "secrets_api_fallback",
-            message:
-              "Infisical has no v4 secrets API, so the secret tools use the deprecated v3 routes. Upgrade to v0.150.0 or later.",
+            message: saidByInfisical
+              ? "Infisical has no v4 secrets API, so the secret tools use the deprecated v3 routes. Upgrade to v0.150.0 or later."
+              : "Infisical answered the v4 secrets route with a 404 page instead of an API error, so the call used the deprecated v3 route. Self-hosted versions up to v0.100.0 answer that way; on a newer version, check whether a proxy in front of Infisical sent the 404.",
           });
         }
       }
