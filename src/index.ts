@@ -96,7 +96,10 @@ export const getEnvironmentVariables = (
       INFISICAL_HOST_URL: z
         .string()
         .url()
-        .default("https://app.infisical.com"),
+        .default("https://app.infisical.com")
+        // the API is under <host>/api, so the host is kept without a trailing
+        // slash or /api, whichever way it was given
+        .transform((url) => url.replace(/\/+$/, "").replace(/\/api$/, "")),
       INFISICAL_ENABLED_TOOLS: z
         .string()
         .trim()
@@ -909,18 +912,7 @@ export const createServer = (
     return { ...secret, secretValue: MASKED_VALUE };
   };
 
-  const apiUrl = (route: string) => {
-    let hostUrl = env.INFISICAL_HOST_URL;
-    if (!hostUrl.endsWith("/api")) {
-      if (hostUrl.endsWith("/")) {
-        hostUrl = hostUrl.slice(0, -1);
-      }
-
-      hostUrl += "/api";
-    }
-
-    return `${hostUrl}${route}`;
-  };
+  const apiUrl = (route: string) => `${env.INFISICAL_HOST_URL}/api${route}`;
 
   const apiRequest = async <T>(
     method: HttpMethod,

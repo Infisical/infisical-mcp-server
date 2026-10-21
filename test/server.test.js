@@ -258,6 +258,18 @@ describe("configuration", () => {
     assert.equal(parse({ INFISICAL_MASK_SECRET_VALUES: "TRUE" }).INFISICAL_MASK_SECRET_VALUES, true);
   });
 
+  test("takes the host with or without a trailing slash or /api", () => {
+    for (const [hostUrl, expected] of [
+      ["https://eu.infisical.com", "https://eu.infisical.com"],
+      ["https://eu.infisical.com/", "https://eu.infisical.com"],
+      ["https://infisical.example.com/api", "https://infisical.example.com"],
+      ["https://infisical.example.com/api/", "https://infisical.example.com"],
+      ["https://example.com/infisical/api/", "https://example.com/infisical"],
+    ]) {
+      assert.equal(parse({ INFISICAL_HOST_URL: hostUrl }).INFISICAL_HOST_URL, expected, hostUrl);
+    }
+  });
+
   test("exposes every tool for all", () => {
     assert.equal(parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length, 10);
   });
