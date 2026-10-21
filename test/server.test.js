@@ -11,6 +11,7 @@ const readline = require("node:readline");
 const { spawn } = require("node:child_process");
 const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
 const { InMemoryTransport } = require("@modelcontextprotocol/sdk/inMemory.js");
+const { ErrorCode } = require("@modelcontextprotocol/sdk/types.js");
 const {
   createServer,
   getEnvironmentVariables,
@@ -336,15 +337,13 @@ describe("tool gating", () => {
   });
 
   // both are protocol errors rather than failed results, as the MCP spec asks
-  const INVALID_PARAMS = -32602;
-
   test("refuses a disabled tool before authenticating", async (t) => {
     const { call, api, logs } = await setup(t, { env: READ_ONLY });
 
     await assert.rejects(
       call("delete-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" }),
       (err) => {
-        assert.equal(err.code, INVALID_PARAMS);
+        assert.equal(err.code, ErrorCode.InvalidParams);
         assert.match(err.message, /not enabled on this server\. Enabled tools: list-secrets, get-secret, list-projects/);
         // the model reads this, and one that can edit files could follow a
         // hint to change the server's configuration and enable the tool
@@ -360,7 +359,7 @@ describe("tool gating", () => {
     const { call, api } = await setup(t, { env: ALL_TOOLS });
 
     await assert.rejects(call("read-minds", {}), (err) => {
-      assert.equal(err.code, INVALID_PARAMS);
+      assert.equal(err.code, ErrorCode.InvalidParams);
       assert.match(err.message, /Unrecognized tool name: read-minds/);
       return true;
     });

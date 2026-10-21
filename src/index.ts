@@ -229,18 +229,18 @@ type ChangeRequest = { id: string; slug: string; status: string };
 
 type SecretWriteResponse = { secret: Secret } | { approval: ChangeRequest };
 
+// every tool answers with a single text block
+const textResult = (text: string) => ({ content: [{ type: "text", text }] });
+
 // marks such a result for the audit log. a symbol key is not serialized, so
 // the client never sees it
 const PENDING_APPROVAL = Symbol("pendingApproval");
 
 const pendingApproval = ({ id, slug, status }: ChangeRequest) => ({
   [PENDING_APPROVAL]: true,
-  content: [
-    {
-      type: "text",
-      text: `The change was not applied yet. This environment requires approval for secret changes, so it is waiting in a change request: ${JSON.stringify({ id, slug, status }, null, 3)}`,
-    },
-  ],
+  ...textResult(
+    `The change was not applied yet. This environment requires approval for secret changes, so it is waiting in a change request: ${JSON.stringify({ id, slug, status }, null, 3)}`,
+  ),
 });
 
 // lets the audit log tell a disabled tool apart from other failures
@@ -1203,14 +1203,7 @@ export const createServer = (
 
         if ("approval" in res) return pendingApproval(res.approval);
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Secret created successfully: ${JSON.stringify(maskSecret(res.secret), null, 3)}`,
-            },
-          ],
-        };
+        return textResult(`Secret created successfully: ${JSON.stringify(maskSecret(res.secret), null, 3)}`);
       }
 
       if (name === AvailableTools.DeleteSecret) {
@@ -1227,14 +1220,7 @@ export const createServer = (
 
         if ("approval" in res) return pendingApproval(res.approval);
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Secret deleted successfully: ${res.secret.secretKey}`,
-            },
-          ],
-        };
+        return textResult(`Secret deleted successfully: ${res.secret.secretKey}`);
       }
 
       if (name === AvailableTools.UpdateSecret) {
@@ -1256,14 +1242,7 @@ export const createServer = (
 
         if ("approval" in res) return pendingApproval(res.approval);
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Secret updated successfully. Updated secret: ${JSON.stringify(maskSecret(res.secret), null, 3)}`,
-            },
-          ],
-        };
+        return textResult(`Secret updated successfully. Updated secret: ${JSON.stringify(maskSecret(res.secret), null, 3)}`);
       }
 
       if (name === AvailableTools.ListSecrets) {
@@ -1300,14 +1279,7 @@ export const createServer = (
           }),
         };
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: `${JSON.stringify(response)}`,
-            },
-          ],
-        };
+        return textResult(`${JSON.stringify(response)}`);
       }
 
       if (name === AvailableTools.GetSecret) {
@@ -1320,14 +1292,7 @@ export const createServer = (
           signal,
         );
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Secret retrieved successfully: ${JSON.stringify(maskSecret(secret), null, 3)}`,
-            },
-          ],
-        };
+        return textResult(`Secret retrieved successfully: ${JSON.stringify(maskSecret(secret), null, 3)}`);
       }
 
       if (name === AvailableTools.CreateProject) {
@@ -1349,14 +1314,7 @@ export const createServer = (
           signal,
         );
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Project created successfully: ${JSON.stringify(project, null, 3)}`,
-            },
-          ],
-        };
+        return textResult(`Project created successfully: ${JSON.stringify(project, null, 3)}`);
       }
 
       if (name === AvailableTools.CreateEnvironment) {
@@ -1375,14 +1333,7 @@ export const createServer = (
           signal,
         );
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Environment created successfully: ${JSON.stringify(environment, null, 3)}`,
-            },
-          ],
-        };
+        return textResult(`Environment created successfully: ${JSON.stringify(environment, null, 3)}`);
       }
 
       if (name === AvailableTools.CreateFolder) {
@@ -1403,14 +1354,7 @@ export const createServer = (
           signal,
         );
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Folder created successfully: ${JSON.stringify(folder, null, 3)}`,
-            },
-          ],
-        };
+        return textResult(`Folder created successfully: ${JSON.stringify(folder, null, 3)}`);
       }
 
       if (name === AvailableTools.InviteMembersToProject) {
@@ -1435,14 +1379,7 @@ export const createServer = (
           signal,
         );
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Members successfully invited to project: ${JSON.stringify(projectMemberships, null, 3)}`,
-            },
-          ],
-        };
+        return textResult(`Members successfully invited to project: ${JSON.stringify(projectMemberships, null, 3)}`);
       }
 
       if (name === AvailableTools.ListProjects) {
@@ -1486,16 +1423,11 @@ export const createServer = (
           })),
         }));
 
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Projects retrieved successfully: ${JSON.stringify(projects, null, 3)}`,
-            },
-          ],
-        };
+        return textResult(`Projects retrieved successfully: ${JSON.stringify(projects, null, 3)}`);
       }
 
+      // unknown names are refused above, so this only catches a tool added to
+      // AvailableTools without a branch here
       throw new Error(`Unrecognized tool name: ${name}`);
     } catch (err) {
       if (err instanceof z.ZodError) {
@@ -1595,10 +1527,7 @@ export const createServer = (
       }
 
       audit("error", message);
-      return {
-        isError: true,
-        content: [{ type: "text", text: message }],
-      };
+      return { isError: true, ...textResult(message) };
     }
   });
 
