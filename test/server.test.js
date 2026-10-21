@@ -1,7 +1,7 @@
 // Each test connects an MCP client to a server built from dist/index.js over
 // an in-memory transport, with a fake Infisical API on localhost behind it.
-// The real SDK and HTTP client run, so the requests asserted here are the
-// ones Infisical would receive. `npm test` builds first.
+// The real HTTP client runs, so the requests asserted here are the ones
+// Infisical would receive. `npm test` builds first.
 
 const { describe, test } = require("node:test");
 const assert = require("node:assert/strict");
@@ -688,6 +688,16 @@ describe("projects, environments, folders and members", () => {
     assert.deepEqual(request.body.emails, ["dev@example.com"]);
     assert.deepEqual(request.body.roleSlugs, ["viewer"]);
   });
+
+  test("invite-members-to-project needs an email or a username", async (t) => {
+    const { callError, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    assert.match(
+      await callError("invite-members-to-project", { projectId: "project-1", emails: [] }),
+      /Either usernames or emails must be provided/,
+    );
+    assert.equal(secretRequests().length, 0);
+  });
 });
 
 describe("errors", () => {
@@ -847,6 +857,22 @@ describe("requests to Infisical", () => {
 
     assert.match(await callError("create-secret", NEW_SECRET), /timeout of 50ms exceeded/);
     // Infisical may have applied it, so sending it again could apply it twice
+    assert.equal(secretRequests().length, 1);
+  });
+
+  test("does not resend a project write that got no response", async (t) => {
+    const { callError, secretRequests } = await setup(t, {
+      env: ALL_TOOLS,
+      options: FAST,
+      respond: ({ method, path }) =>
+        method === "POST" && path === "/api/v2/workspace" ? HANG : undefined,
+    });
+
+    assert.match(
+      await callError("create-project", { projectName: "Billing", type: "secret-manager", slug: "billing" }),
+      /timeout of 50ms exceeded/,
+    );
+    // a second POST could create the project twice, or report it as a conflict
     assert.equal(secretRequests().length, 1);
   });
 
@@ -1013,7 +1039,7 @@ describe("authentication", () => {
     assert.equal(countLogins(api), 2);
   });
 
-  test("logs in again when an SDK-backed tool gets a 401", async (t) => {
+  test("logs in again when a project tool gets a 401", async (t) => {
     const tokens = revocableTokens();
     const { call, api } = await setup(t, { env: ALL_TOOLS, respond: tokens.respond });
 

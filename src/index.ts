@@ -1,10 +1,9 @@
 #!/usr/bin/env node
 
-import {
-  InfisicalSDK,
-  type GetSecretResponse,
-  type ListSecretsResponse,
-  type Secret,
+import type {
+  GetSecretResponse,
+  ListSecretsResponse,
+  Secret,
 } from "@infisical/sdk";
 import fs from "fs";
 import axios from "axios";
@@ -205,8 +204,8 @@ const getRenewalTime = (expiresIn: number | undefined, requestedAt: number) => {
   return requestedAt + lifetimeMs - marginMs;
 };
 
-// match the SDK's own client: a 10 second timeout, and up to four retries with
-// exponential backoff when rate limited or when no response comes back
+// a 10 second timeout, and up to four retries with exponential backoff when
+// rate limited or when a read gets no response, as the SDK's client does
 const API_TIMEOUT_MS = 10 * 1000;
 const API_MAX_RETRIES = 4;
 const API_RETRY_DELAY_MS = 1000;
@@ -292,13 +291,8 @@ const toV3Fields = <V>(fields: Record<string, V>) => {
   return renamed;
 };
 
-// the SDK's errors only carry the status in their message: [StatusCode=401]
-// when the response had a message, axios's own wording when it did not
 const isUnauthorized = (err: unknown) =>
-  err instanceof ApiRequestError
-    ? err.status === 401
-    : err instanceof Error &&
-      /\[StatusCode=401\]|status code 401\b/.test(err.message);
+  err instanceof ApiRequestError && err.status === 401;
 
 type LogEntry = Record<string, unknown>;
 
@@ -848,21 +842,17 @@ export const createServer = (
   }: ServerOptions = {},
 ) => {
   let isAuthenticated = false;
+  let accessToken: string | undefined;
   let renewLoginAt: number | undefined;
   let pendingLogin: Promise<void> | undefined;
-  const infisicalSdk = new InfisicalSDK({
-    siteUrl: env.INFISICAL_HOST_URL,
-  });
 
   const logIn = async () => {
     switch (env.INFISICAL_AUTH_METHOD) {
       case InfisicalAuthMethod.UniversalAuth: {
         const requestedAt = Date.now();
-        // logged in directly rather than through the SDK, which sends its
-        // current token with every request, the login included. Infisical
-        // refuses a login carrying a revoked or used-up token, so logging in
-        // again after a 401 never worked
-        const { accessToken, expiresIn } = await apiRequest<{
+        // the login carries no token, since Infisical refuses a login that
+        // carries a revoked or used-up one
+        const login = await apiRequest<{
           accessToken: string;
           expiresIn?: number;
         }>("POST", "/v1/auth/universal-auth/login", {
@@ -872,12 +862,12 @@ export const createServer = (
           },
           withoutToken: true,
         });
-        infisicalSdk.auth().accessToken(accessToken);
-        renewLoginAt = getRenewalTime(expiresIn, requestedAt);
+        accessToken = login.accessToken;
+        renewLoginAt = getRenewalTime(login.expiresIn, requestedAt);
         break;
       }
       case InfisicalAuthMethod.TokenAuth:
-        infisicalSdk.auth().accessToken(env.INFISICAL_TOKEN!);
+        accessToken = env.INFISICAL_TOKEN!;
         break;
       default:
         throw new Error(
@@ -955,9 +945,7 @@ export const createServer = (
           timeout: requestTimeoutMs,
           headers: withoutToken
             ? {}
-            : {
-                Authorization: `Bearer ${infisicalSdk.auth().getAccessToken()}`,
-              },
+            : { Authorization: `Bearer ${accessToken}` },
         });
 
         return res.data;
@@ -1260,14 +1248,21 @@ export const createServer = (
       if (name === AvailableTools.CreateProject) {
         const data = createProjectSchema.zod.parse(args);
 
-        const project = await infisicalSdk.projects().create({
-          projectName: data.projectName,
-          projectDescription: data.description,
-          kmsKeyId: data.kmsKeyId,
-          slug: data.slug,
-          template: data.projectTemplate,
-          type: data.type,
-        });
+        const { project } = await apiRequest<{ project: unknown }>(
+          "POST",
+          "/v2/workspace",
+          {
+            data: {
+              projectName: data.projectName,
+              projectDescription: data.description,
+              kmsKeyId: data.kmsKeyId,
+              slug: data.slug,
+              template: data.projectTemplate,
+              type: data.type,
+            },
+          },
+          signal,
+        );
 
         return {
           content: [
@@ -1282,12 +1277,18 @@ export const createServer = (
       if (name === AvailableTools.CreateEnvironment) {
         const data = createEnvironmentSchema.zod.parse(args);
 
-        const environment = await infisicalSdk.environments().create({
-          projectId: data.projectId,
-          name: data.name,
-          slug: data.slug,
-          position: data.position,
-        });
+        const { environment } = await apiRequest<{ environment: unknown }>(
+          "POST",
+          `/v1/workspace/${encodeURIComponent(data.projectId)}/environments`,
+          {
+            data: {
+              name: data.name,
+              slug: data.slug,
+              position: data.position,
+            },
+          },
+          signal,
+        );
 
         return {
           content: [
@@ -1302,13 +1303,20 @@ export const createServer = (
       if (name === AvailableTools.CreateFolder) {
         const data = createFolderSchema.zod.parse(args);
 
-        const folder = await infisicalSdk.folders().create({
-          description: data.description,
-          environment: data.environment,
-          name: data.name,
-          path: data.path,
-          projectId: data.projectId,
-        });
+        const { folder } = await apiRequest<{ folder: unknown }>(
+          "POST",
+          "/v1/folders",
+          {
+            data: {
+              workspaceId: data.projectId,
+              environment: data.environment,
+              name: data.name,
+              path: data.path,
+              description: data.description,
+            },
+          },
+          signal,
+        );
 
         return {
           content: [
@@ -1323,12 +1331,24 @@ export const createServer = (
       if (name === AvailableTools.InviteMembersToProject) {
         const data = inviteMembersToProjectSchema.zod.parse(args);
 
-        const projectMemberships = await infisicalSdk.projects().inviteMembers({
-          projectId: data.projectId,
-          emails: data.emails,
-          usernames: data.usernames,
-          roleSlugs: data.roleSlugs,
-        });
+        if (!data.emails?.length && !data.usernames?.length) {
+          throw new Error("Either usernames or emails must be provided");
+        }
+
+        const { memberships: projectMemberships } = await apiRequest<{
+          memberships: unknown;
+        }>(
+          "POST",
+          `/v2/workspace/${encodeURIComponent(data.projectId)}/memberships`,
+          {
+            data: {
+              emails: data.emails,
+              usernames: data.usernames,
+              roleSlugs: data.roleSlugs,
+            },
+          },
+          signal,
+        );
 
         return {
           content: [
@@ -1411,9 +1431,7 @@ export const createServer = (
     req: CallToolRequest,
     signal: AbortSignal,
   ) => {
-    const tokenBefore = isAuthenticated
-      ? infisicalSdk.auth().getAccessToken()
-      : null;
+    const tokenBefore = isAuthenticated ? accessToken : null;
 
     try {
       return await callTool(req, signal);
@@ -1426,7 +1444,7 @@ export const createServer = (
 
       // calls that sent the same token fail together. the first to get here
       // drops it, and the rest find a new one, or the login under way for it
-      if (infisicalSdk.auth().getAccessToken() === tokenBefore) {
+      if (accessToken === tokenBefore) {
         isAuthenticated = false;
       }
 
