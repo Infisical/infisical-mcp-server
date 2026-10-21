@@ -345,7 +345,10 @@ describe("tool gating", () => {
       call("delete-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" }),
       (err) => {
         assert.equal(err.code, INVALID_PARAMS);
-        assert.match(err.message, /not enabled on this server.*Add it to INFISICAL_ENABLED_TOOLS/);
+        assert.match(err.message, /not enabled on this server\. Enabled tools: list-secrets, get-secret, list-projects/);
+        // the model reads this, and one that can edit files could follow a
+        // hint to change the server's configuration and enable the tool
+        assert.ok(!err.message.includes("INFISICAL_ENABLED_TOOLS"));
         return true;
       },
     );

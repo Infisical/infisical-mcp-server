@@ -1175,10 +1175,12 @@ export const createServer = (
         );
       }
 
-      // gate before authenticating so a disabled tool never touches credentials
+      // gate before authenticating so a disabled tool never touches credentials.
+      // the model reads this message, so it does not say how to enable the
+      // tool; the audit log records the refusal for the operator
       if (!isToolEnabled(name)) {
         throw new ToolNotEnabledError(
-          `Tool "${name}" is not enabled on this server. Enabled tools: ${env.INFISICAL_ENABLED_TOOLS.join(", ")}. Add it to INFISICAL_ENABLED_TOOLS in the server's configuration to enable it.`,
+          `Tool "${name}" is not enabled on this server. Enabled tools: ${env.INFISICAL_ENABLED_TOOLS.join(", ")}.`,
         );
       }
 
