@@ -106,7 +106,7 @@ Existing configurations keep working. Two things behave differently from earlier
 
 ## Audit log
 
-The server writes one JSON object per line to stderr: a `server_started` entry with the version, host, enabled tools and masking setting, logged as a warning that names any hardening control left off, then a `tool_call` entry for every call, and a `secrets_api_fallback` warning if the instance has no v4 secrets API. MCP clients usually keep a server's stderr in their logs; Claude Desktop, for example, writes it to `mcp-server-infisical.log`. Each `tool_call` entry records:
+The server writes one JSON object per line to stderr: a `server_started` entry with the version, host, enabled tools and masking setting, logged as a warning that names any hardening control left off, then a `tool_call` entry for every call. It also logs a `secrets_api_fallback` warning, once, when the instance has no v4 secrets API or answers it with a 404 page, and a `token_renewal_failed` warning when it could neither renew the access token nor log in again and keeps using the current token until it expires. MCP clients usually keep a server's stderr in their logs; Claude Desktop, for example, writes it to `mcp-server-infisical.log`. Each `tool_call` entry records:
 
 - `time`, `tool`, `durationMs`, and `outcome`: `success`, `pending_approval` when the change is waiting for approval, `error`, or `denied` when the tool is not enabled.
 - `actor`: the authentication method and, for universal auth, the machine identity's client ID.
