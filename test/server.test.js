@@ -21,6 +21,8 @@ const SECRET_VALUE = "s3cr3t-value";
 const CLIENT_SECRET = "universal-auth-client-secret";
 const MASKED_VALUE = "<masked>";
 const READ_ONLY_TOOLS = ["list-secrets", "get-secret", "list-projects"];
+const LOGIN_PATH = "/api/v1/auth/universal-auth/login";
+const RENEW_PATH = "/api/v1/auth/token/renew";
 
 // shaped like Infisical's tokens; the server treats it as opaque, and takes
 // the lifetime from the login's expiresIn
@@ -43,8 +45,13 @@ const fakeSecret = (secretKey, query) => {
 };
 
 const defaultResponse = ({ method, path, query, body }) => {
-  if (method === "POST" && path === "/api/v1/auth/universal-auth/login") {
+  if (method === "POST" && path === LOGIN_PATH) {
     return [200, { accessToken: accessToken(3600), expiresIn: 3600 }];
+  }
+
+  // renewing keeps the token and extends its lifetime
+  if (method === "POST" && path === RENEW_PATH) {
+    return [200, { accessToken: body.accessToken, expiresIn: 3600, accessTokenMaxTTL: 2592000 }];
   }
 
   if (method === "GET" && path === "/api/v4/secrets") {
@@ -222,11 +229,13 @@ const setup = async (t, { env = {}, respond, options = {} } = {}) => {
     return result.content[0].text;
   };
 
-  // requests past the login, which every first call makes
+  // requests past the login, which every first call makes, and renewals
   const secretRequests = () =>
     api.requests.filter((request) => !request.path.includes("/auth/"));
+  const logins = () => api.requests.filter((request) => request.path === LOGIN_PATH);
+  const renewals = () => api.requests.filter((request) => request.path === RENEW_PATH);
 
-  return { client, api, logs, call, callError, secretRequests };
+  return { client, api, logs, call, callError, secretRequests, logins, renewals };
 };
 
 // the JSON a tool response carries after its leading sentence
@@ -972,7 +981,7 @@ describe("requests to Infisical", () => {
     await waitFor(() => context.logs.length === 2);
 
     assert.equal(context.api.requests.filter(isSecretWrite).length, 1);
-    assert.equal(context.api.requests.filter((request) => request.path.includes("/auth/")).length, 1);
+    assert.equal(context.logins().length, 1);
   });
 
   test("does not resend a rate-limited write after the client cancels", async (t) => {
@@ -1007,68 +1016,112 @@ describe("requests to Infisical", () => {
 
 describe("authentication", () => {
   test("logs in once and sends the token on every request", async (t) => {
-    const { call, api } = await setup(t);
+    const { call, api, logins } = await setup(t);
 
     await call("list-secrets", SECRET_LOCATION);
     await call("get-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" });
     await call("list-projects", {});
 
-    const logins = api.requests.filter((request) => request.path.includes("/auth/"));
-    assert.equal(logins.length, 1);
-    assert.equal(logins[0].body.clientSecret, CLIENT_SECRET);
+    assert.equal(logins().length, 1);
+    assert.equal(logins()[0].body.clientSecret, CLIENT_SECRET);
 
     const [, ...calls] = api.requests;
     assert.equal(calls.length, 3);
     assert.ok(calls.every((request) => /^Bearer .+\..+\..+$/.test(request.authorization)));
   });
 
-  // the clock is mocked so a token can age without the test waiting
-  const withTokenLifetime = async (t, ttlSeconds) => {
+  // the clock is mocked so a token can age without the test waiting. logins
+  // and renewals both issue a token with the given lifetime, unless `respond`
+  // answers them first
+  const withTokenLifetime = async (t, ttlSeconds, respond) => {
     t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
-    const context = await setup(t, {
-      respond: ({ path }) =>
-        path === "/api/v1/auth/universal-auth/login"
-          ? [200, { accessToken: accessToken(ttlSeconds), expiresIn: ttlSeconds }]
-          : undefined,
+    return setup(t, {
+      respond: (request) => {
+        const response = respond?.(request);
+        if (response) return response;
+        if (request.path === LOGIN_PATH) {
+          return [200, { accessToken: accessToken(ttlSeconds), expiresIn: ttlSeconds }];
+        }
+        if (request.path === RENEW_PATH) {
+          return [200, { accessToken: request.body.accessToken, expiresIn: ttlSeconds }];
+        }
+      },
     });
-    const logins = () =>
-      context.api.requests.filter((request) => request.path.includes("/auth/")).length;
-    return { ...context, logins };
   };
 
-  test("keeps a token until a minute before it expires, then logs in again", async (t) => {
-    const { call, logins } = await withTokenLifetime(t, 3600);
+  test("keeps a token until a minute before it expires, then renews it", async (t) => {
+    const { call, logins, renewals, secretRequests } = await withTokenLifetime(t, 3600);
 
     await call("list-secrets", SECRET_LOCATION);
     t.mock.timers.tick((3600 - 61) * 1000);
     await call("list-secrets", SECRET_LOCATION);
-    assert.equal(logins(), 1);
+    assert.equal(renewals().length, 0);
 
     t.mock.timers.tick(2 * 1000);
     await call("list-secrets", SECRET_LOCATION);
-    assert.equal(logins(), 2);
+    assert.equal(renewals().length, 1);
+    // renewing spends none of the client secret's uses, as a login would
+    assert.equal(logins().length, 1);
+    assert.equal(`Bearer ${renewals()[0].body.accessToken}`, secretRequests()[0].authorization);
+    assert.equal(renewals()[0].authorization, undefined);
   });
 
   test("renews a short-lived token halfway through, not on every call", async (t) => {
-    const { call, logins } = await withTokenLifetime(t, 30);
+    const { call, logins, renewals } = await withTokenLifetime(t, 30);
 
     await call("list-secrets", SECRET_LOCATION);
     await call("list-secrets", SECRET_LOCATION);
     t.mock.timers.tick(14 * 1000);
     await call("list-secrets", SECRET_LOCATION);
-    assert.equal(logins(), 1);
+    assert.equal(renewals().length, 0);
 
     t.mock.timers.tick(2 * 1000);
     await call("list-secrets", SECRET_LOCATION);
-    assert.equal(logins(), 2);
+    assert.equal(renewals().length, 1);
+    assert.equal(logins().length, 1);
+  });
+
+  test("logs in again once Infisical refuses to renew the token", async (t) => {
+    const { call, logins, renewals } = await withTokenLifetime(t, 3600, ({ path }) =>
+      path === RENEW_PATH
+        ? [401, { message: "Cannot renew: identity access token has reached its max TTL" }]
+        : undefined,
+    );
+
+    await call("list-secrets", SECRET_LOCATION);
+    t.mock.timers.tick((3600 - 59) * 1000);
+    await call("list-secrets", SECRET_LOCATION);
+
+    assert.equal(renewals().length, 1);
+    assert.equal(logins().length, 2);
+  });
+
+  test("keeps a token that still works when renewing and logging in both fail", async (t) => {
+    let infisicalDown = false;
+    const { call, callError, logs, secretRequests } = await withTokenLifetime(t, 3600, ({ path }) =>
+      infisicalDown && path.includes("/auth/") ? [502, { message: "Bad gateway" }] : undefined,
+    );
+
+    await call("list-secrets", SECRET_LOCATION);
+    const token = secretRequests()[0].authorization;
+    infisicalDown = true;
+
+    t.mock.timers.tick((3600 - 59) * 1000);
+    await call("list-secrets", SECRET_LOCATION);
+    assert.equal(secretRequests()[1].authorization, token);
+    assert.ok(logs.some((entry) => entry.event === "token_renewal_failed"));
+
+    // once it has expired there is nothing left to fall back on
+    t.mock.timers.tick(60 * 1000);
+    assert.match(await callError("list-secrets", SECRET_LOCATION), /502: Bad gateway/);
   });
 
   test("retries a login that got no response", async (t) => {
     let hung = false;
-    const { call, api } = await setup(t, {
+    const { call, logins } = await setup(t, {
       options: { requestTimeoutMs: 50, retryDelayMs: 1 },
       respond: (request) => {
-        if (request.path.includes("/auth/") && !hung) {
+        if (request.path === LOGIN_PATH && !hung) {
           hung = true;
           return HANG;
         }
@@ -1077,18 +1130,17 @@ describe("authentication", () => {
 
     await call("list-secrets", SECRET_LOCATION);
 
-    assert.equal(api.requests.filter((request) => request.path.includes("/auth/")).length, 2);
+    assert.equal(logins().length, 2);
   });
 
   test("shares one login between calls that arrive together", async (t) => {
-    const { call, api } = await setup(t);
+    const { call, logins } = await setup(t);
 
     await Promise.all(
       Array.from({ length: 5 }, () => call("list-secrets", SECRET_LOCATION)),
     );
 
-    const logins = api.requests.filter((request) => request.path.includes("/auth/"));
-    assert.equal(logins.length, 1);
+    assert.equal(logins().length, 1);
   });
 
   // issues a distinct token per login, and once revoke() is called rejects
@@ -1104,7 +1156,7 @@ describe("authentication", () => {
         if (revoked.has(request.authorization?.replace("Bearer ", ""))) {
           return [401, { message: "Failed to authorize: token usage limit reached" }];
         }
-        if (request.path === "/api/v1/auth/universal-auth/login") {
+        if (request.path === LOGIN_PATH) {
           const token = `${accessToken(3600)}.${issued.length}`;
           issued.push(token);
           return [200, { accessToken: token, expiresIn: 3600 }];
@@ -1113,26 +1165,23 @@ describe("authentication", () => {
     };
   };
 
-  const countLogins = (api) =>
-    api.requests.filter((request) => request.path.includes("/auth/")).length;
-
   test("logs in again when Infisical rejects the token, and retries the read", async (t) => {
     const tokens = revocableTokens();
-    const { call, api, secretRequests } = await setup(t, { respond: tokens.respond });
+    const { call, logins, secretRequests } = await setup(t, { respond: tokens.respond });
 
     await call("list-secrets", SECRET_LOCATION);
     tokens.revoke();
     const text = await call("get-secret", { ...SECRET_LOCATION, secretName: "DB_PASSWORD" });
 
     assert.equal(parseResponse(text).secretKey, "DB_PASSWORD");
-    assert.equal(countLogins(api), 2);
+    assert.equal(logins().length, 2);
     // the list, the refused get, and the get retried with the new token
     assert.equal(secretRequests().length, 3);
   });
 
   test("recovers every call that arrives together with a revoked token", async (t) => {
     const tokens = revocableTokens();
-    const { call, api } = await setup(t, { respond: tokens.respond });
+    const { call, logins } = await setup(t, { respond: tokens.respond });
 
     await call("list-secrets", SECRET_LOCATION);
     tokens.revoke();
@@ -1141,23 +1190,23 @@ describe("authentication", () => {
     );
 
     // one login for all three, not one each
-    assert.equal(countLogins(api), 2);
+    assert.equal(logins().length, 2);
   });
 
   test("logs in again when a project tool gets a 401", async (t) => {
     const tokens = revocableTokens();
-    const { call, api } = await setup(t, { env: ALL_TOOLS, respond: tokens.respond });
+    const { call, logins } = await setup(t, { env: ALL_TOOLS, respond: tokens.respond });
 
     await call("list-secrets", SECRET_LOCATION);
     tokens.revoke();
     await call("create-folder", { projectId: "project-1", environment: "dev", name: "backend" });
 
-    assert.equal(countLogins(api), 2);
+    assert.equal(logins().length, 2);
   });
 
   test("retries a direct write after a 401", async (t) => {
     const tokens = revocableTokens();
-    const { call, api, secretRequests } = await setup(t, {
+    const { call, logins, secretRequests } = await setup(t, {
       env: ALL_TOOLS,
       respond: tokens.respond,
     });
@@ -1171,34 +1220,34 @@ describe("authentication", () => {
     });
 
     assert.match(text, /Secret created successfully/);
-    assert.equal(countLogins(api), 2);
+    assert.equal(logins().length, 2);
     const creates = secretRequests().filter((request) => request.method === "POST");
     assert.equal(creates.length, 2);
   });
 
   test("gives up when the new token is rejected too", async (t) => {
-    const { callError, api } = await setup(t, {
+    const { callError, logins } = await setup(t, {
       respond: ({ path }) =>
         path.startsWith("/api/v4/secrets") ? [401, { message: "Token revoked" }] : undefined,
     });
 
     assert.match(await callError("list-secrets", SECRET_LOCATION), /401: Token revoked/);
     // the first call's own login, and no retry, since its token was fresh
-    assert.equal(countLogins(api), 1);
+    assert.equal(logins().length, 1);
 
     assert.match(await callError("list-secrets", SECRET_LOCATION), /401: Token revoked/);
     // one more login for the retry, then it gives up
-    assert.equal(countLogins(api), 2);
+    assert.equal(logins().length, 2);
   });
 
   test("does not log in twice when the login itself is refused", async (t) => {
-    const { callError, api } = await setup(t, {
+    const { callError, logins } = await setup(t, {
       respond: ({ path }) =>
         path.includes("/auth/") ? [401, { message: "Invalid credentials" }] : undefined,
     });
 
     assert.match(await callError("list-secrets", SECRET_LOCATION), /Invalid credentials/);
-    assert.equal(countLogins(api), 1);
+    assert.equal(logins().length, 1);
   });
 
   test("does not retry a rejected access token it cannot renew", async (t) => {

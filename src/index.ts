@@ -192,20 +192,29 @@ export const getEnvironmentVariables = (
 
 type Env = ReturnType<typeof getEnvironmentVariables>;
 
-// log in again this long before the access token expires, or halfway through
-// its lifetime if that comes first, so a short TTL is not a login per call
+// renew the access token this long before it expires, or halfway through its
+// lifetime if that comes first, so a short TTL is not a renewal per call
 const TOKEN_RENEWAL_MARGIN_MS = 60 * 1000;
 
-// work out when to log in again from the login's expiresIn, which is relative,
-// so a local clock that disagrees with Infisical's does not matter. a token
-// that never expires comes back with an expiresIn of 0
-const getRenewalTime = (expiresIn: number | undefined, requestedAt: number) => {
-  if (!expiresIn || expiresIn <= 0) return undefined;
+// when renewing and logging in again both fail, the current token is kept
+// while it is still valid, and renewing is tried again this much later
+const TOKEN_RENEWAL_RETRY_MS = 10 * 1000;
+
+// work out when to renew from the expiresIn that a login or renewal returns,
+// which is relative, so a local clock that disagrees with Infisical's does not
+// matter. a token that never expires comes back with an expiresIn of 0
+const getTokenTimes = (expiresIn: number | undefined, requestedAt: number) => {
+  if (!expiresIn || expiresIn <= 0) {
+    return { renewAt: undefined, expiresAt: undefined };
+  }
 
   const lifetimeMs = expiresIn * 1000;
   const marginMs = Math.min(TOKEN_RENEWAL_MARGIN_MS, lifetimeMs / 2);
 
-  return requestedAt + lifetimeMs - marginMs;
+  return {
+    renewAt: requestedAt + lifetimeMs - marginMs,
+    expiresAt: requestedAt + lifetimeMs,
+  };
 };
 
 // a 10 second timeout, and up to four retries with exponential backoff when
@@ -856,8 +865,19 @@ export const createServer = (
 ) => {
   let isAuthenticated = false;
   let accessToken: string | undefined;
-  let renewLoginAt: number | undefined;
+  let renewTokenAt: number | undefined;
+  let tokenExpiresAt: number | undefined;
   let pendingLogin: Promise<void> | undefined;
+
+  const useToken = (
+    token: { accessToken: string; expiresIn?: number },
+    requestedAt: number,
+  ) => {
+    const { renewAt, expiresAt } = getTokenTimes(token.expiresIn, requestedAt);
+    accessToken = token.accessToken;
+    renewTokenAt = renewAt;
+    tokenExpiresAt = expiresAt;
+  };
 
   const logIn = async () => {
     switch (env.INFISICAL_AUTH_METHOD) {
@@ -877,8 +897,7 @@ export const createServer = (
           // a second login only issues another token
           idempotent: true,
         });
-        accessToken = login.accessToken;
-        renewLoginAt = getRenewalTime(login.expiresIn, requestedAt);
+        useToken(login, requestedAt);
         break;
       }
       case InfisicalAuthMethod.TokenAuth:
@@ -893,20 +912,62 @@ export const createServer = (
     isAuthenticated = true;
   };
 
+  // renewing extends the token's lifetime, up to its max TTL, without a login,
+  // and a login spends one of the client secret's uses when it has a limit
+  const renewToken = async () => {
+    const requestedAt = Date.now();
+    const renewed = await apiRequest<{
+      accessToken: string;
+      expiresIn?: number;
+    }>("POST", "/v1/auth/token/renew", {
+      data: { accessToken },
+      withoutToken: true,
+      idempotent: true,
+    });
+    useToken(renewed, requestedAt);
+  };
+
+  // Infisical refuses to renew a token past its max TTL, and then the server
+  // logs in again. if that fails too, the token in hand still works until it
+  // expires, so it is kept, and renewing is tried again shortly
+  const renewOrLogIn = async () => {
+    try {
+      await renewToken();
+      return;
+    } catch {
+      // logging in again covers every reason renewing can fail
+    }
+
+    try {
+      await logIn();
+    } catch (err) {
+      const now = Date.now();
+      if (tokenExpiresAt === undefined || now >= tokenExpiresAt) throw err;
+
+      renewTokenAt = Math.min(now + TOKEN_RENEWAL_RETRY_MS, tokenExpiresAt);
+      safeLog({
+        level: "warn",
+        event: "token_renewal_failed",
+        message: `Could not renew the access token or log in again, so the current token is used until it expires: ${(err as Error).message}`,
+      });
+    }
+  };
+
   const handleAuthentication = async () => {
     const isRenewalDue =
-      renewLoginAt !== undefined && Date.now() >= renewLoginAt;
+      renewTokenAt !== undefined && Date.now() >= renewTokenAt;
 
     if (isAuthenticated && !isRenewalDue) {
       return;
     }
 
     // calls that arrive while a login is under way wait for it, rather than
-    // each spending a login of their own
+    // each spending a login of their own. a token that was dropped after a
+    // 401 is replaced by a login, since Infisical refused it
     if (!pendingLogin) {
       pendingLogin = (async () => {
         try {
-          await logIn();
+          await (isAuthenticated ? renewOrLogIn() : logIn());
         } finally {
           pendingLogin = undefined;
         }

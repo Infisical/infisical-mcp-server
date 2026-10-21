@@ -150,7 +150,7 @@ The server enforces no permissions of its own. It can do whatever its identity c
 
 ### Rotating credentials
 
-- **Universal auth.** Create a new client secret on the identity, update `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` in the client's configuration, restart the client, then revoke the old secret. A short access token TTL is fine: the server logs in again shortly before each token expires, so it does not need a restart when one lapses.
+- **Universal auth.** Create a new client secret on the identity, update `INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET` in the client's configuration, restart the client, then revoke the old secret. A short access token TTL is fine: the server renews the token shortly before it expires, and logs in again only once Infisical refuses to renew it, at the token's max TTL, so it does not need a restart when one lapses. Renewing spends none of the client secret's uses; each login spends one when the secret has a usage limit.
 - **Access token.** The server cannot renew a token passed in `INFISICAL_TOKEN`. When it expires or is rotated, update the configuration and restart the client.
 
 ### Pinning, verifying and rolling back
