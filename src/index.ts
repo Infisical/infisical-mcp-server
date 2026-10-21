@@ -267,6 +267,9 @@ type RequestOptions = {
   data?: Record<string, unknown>;
   // send no access token, as for the login itself
   withoutToken?: boolean;
+  // a write that is safe to send twice, so it is resent when no response
+  // comes back, as a read is
+  idempotent?: boolean;
 };
 
 // where a secret lives, in the fields every secret route takes
@@ -871,6 +874,8 @@ export const createServer = (
             clientSecret: env.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET,
           },
           withoutToken: true,
+          // a second login only issues another token
+          idempotent: true,
         });
         accessToken = login.accessToken;
         renewLoginAt = getRenewalTime(login.expiresIn, requestedAt);
@@ -924,7 +929,7 @@ export const createServer = (
   const apiRequest = async <T>(
     method: HttpMethod,
     route: string,
-    { params, data, withoutToken }: RequestOptions,
+    { params, data, withoutToken, idempotent }: RequestOptions,
     signal?: AbortSignal,
   ) => {
     // a write may already have been applied when no response comes back, so
@@ -957,7 +962,7 @@ export const createServer = (
         const isRetryable =
           !axios.isCancel(err) &&
           (err.response?.status === 429 ||
-            (isRead && err.response === undefined));
+            ((isRead || idempotent) && err.response === undefined));
 
         if (isRetryable && attempt < API_MAX_RETRIES) {
           const delay = retryDelayMs * 2 ** attempt;

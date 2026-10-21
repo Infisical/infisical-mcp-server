@@ -1063,6 +1063,23 @@ describe("authentication", () => {
     assert.equal(logins(), 2);
   });
 
+  test("retries a login that got no response", async (t) => {
+    let hung = false;
+    const { call, api } = await setup(t, {
+      options: { requestTimeoutMs: 50, retryDelayMs: 1 },
+      respond: (request) => {
+        if (request.path.includes("/auth/") && !hung) {
+          hung = true;
+          return HANG;
+        }
+      },
+    });
+
+    await call("list-secrets", SECRET_LOCATION);
+
+    assert.equal(api.requests.filter((request) => request.path.includes("/auth/")).length, 2);
+  });
+
   test("shares one login between calls that arrive together", async (t) => {
     const { call, api } = await setup(t);
 
