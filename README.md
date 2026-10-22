@@ -73,6 +73,7 @@ Add the following to your `claude_desktop_config.json`. See [here](https://model
 | `get-secret`                | Get a single secret                     |
 | `create-project`            | Create a new project                    |
 | `create-environment`        | Create a new environment                |
+| `delete-environment`        | Soft-delete an environment (restorable) |
 | `create-folder`             | Create a new folder                     |
 | `invite-members-to-project` | Invite one or more members to a project |
 | `list-projects`             | List all projects                       |
@@ -83,6 +84,7 @@ Both variables are optional, and their defaults keep the server's existing behav
 
 - `INFISICAL_ENABLED_TOOLS`: a comma-separated allowlist of tools to expose, using the tool names from the table above (for example `list-projects,list-secrets,get-secret` for a read-only server). Tools left out are hidden from `tools/list` and refused if called. An unknown name fails at startup. Omit the variable to expose every tool.
 - `INFISICAL_MASK_SECRET_VALUES`: `true` or `false`, case-insensitive. Defaults to `false`. When `true`, secret values in tool responses are replaced with `<masked>`, keeping secret material out of the model's context. Secret names, paths, and other metadata are still returned.
+- `delete-environment` always performs a soft delete; hard deletion is intentionally not exposed by this MCP tool. The environment can be restored through the Infisical API or UI where supported.
 
 Scope the machine identity to only the projects and environments the server needs, rather than using a token with broader access than the exposed tools require.
 

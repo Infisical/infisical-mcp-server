@@ -25,6 +25,7 @@ enum AvailableTools {
   GetSecret = "get-secret",
   CreateProject = "create-project",
   CreateEnvironment = "create-environment",
+  DeleteEnvironment = "delete-environment",
   CreateFolder = "create-folder",
   InviteMembersToProject = "invite-members-to-project",
   ListProjects = "list-projects",
@@ -555,6 +556,38 @@ const createEnvironmentSchema = {
   },
 };
 
+const deleteEnvironmentSchema = {
+  zod: z.object({
+    projectId: z.string(),
+    environmentId: z.string(),
+  }),
+  capability: {
+    name: AvailableTools.DeleteEnvironment,
+    annotations: {
+      title: "Delete environment",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+    },
+    description:
+      "Soft-delete an environment in Infisical. Soft-deleted environments can be restored.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          description: "The ID of the project containing the environment (required)",
+        },
+        environmentId: {
+          type: "string",
+          description: "The ID of the environment to soft-delete (required)",
+        },
+      },
+      required: ["projectId", "environmentId"],
+    },
+  },
+};
+
 const createFolderSchema = {
   zod: z.object({
     description: z.string().optional(),
@@ -680,6 +713,7 @@ const allCapabilities = [
   getSecretSchema.capability,
   createProjectSchema.capability,
   createEnvironmentSchema.capability,
+  deleteEnvironmentSchema.capability,
   createFolderSchema.capability,
   inviteMembersToProjectSchema.capability,
   listProjectsSchema.capability,
@@ -882,6 +916,32 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           {
             type: "text",
             text: `Environment created successfully: ${JSON.stringify(environment, null, 3)}`,
+          },
+        ],
+      };
+    }
+
+    if (name === AvailableTools.DeleteEnvironment) {
+      const data = deleteEnvironmentSchema.zod.parse(args);
+      const hostUrl = env.INFISICAL_HOST_URL.endsWith("/api")
+        ? env.INFISICAL_HOST_URL
+        : `${env.INFISICAL_HOST_URL.replace(/\/$/, "")}/api`;
+
+      const response = await axios.delete(
+        `${hostUrl}/v1/workspace/${encodeURIComponent(data.projectId)}/environments/${encodeURIComponent(data.environmentId)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${infisicalSdk.auth().getAccessToken()}`,
+          },
+        },
+      );
+
+      const deletedEnvironment = response.data?.environment;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Environment soft-deleted successfully (ID: ${data.environmentId}${deletedEnvironment?.slug ? `, slug: ${deletedEnvironment.slug}` : ""}).`,
           },
         ],
       };
