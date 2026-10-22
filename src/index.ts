@@ -21,10 +21,14 @@ enum AvailableTools {
   CreateSecret = "create-secret",
   DeleteSecret = "delete-secret",
   UpdateSecret = "update-secret",
+  CreateSecretTag = "create-secret-tag",
+  ListSecretTags = "list-secret-tags",
+  GetSecretMetadata = "get-secret-metadata",
   ListSecrets = "list-secrets",
   GetSecret = "get-secret",
   CreateProject = "create-project",
   CreateEnvironment = "create-environment",
+  DeleteEnvironment = "delete-environment",
   CreateFolder = "create-folder",
   InviteMembersToProject = "invite-members-to-project",
   ListProjects = "list-projects",
@@ -218,6 +222,7 @@ const createSecretSchema = {
     secretName: z.string(),
     secretValue: z.string().optional(),
     secretPath: z.string().default("/"),
+    tagIds: z.array(z.string()).optional(),
   }),
   capability: {
     name: AvailableTools.CreateSecret,
@@ -252,6 +257,11 @@ const createSecretSchema = {
         secretPath: {
           type: "string",
           description: "The path of the secret to create (Defaults to /)",
+        },
+        tagIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "IDs of existing project tags to assign to the secret",
         },
       },
       required: ["projectId", "environmentSlug", "secretName"],
@@ -310,6 +320,7 @@ const updateSecretSchema = {
     newSecretName: z.string().optional(),
     secretValue: z.string().optional(),
     secretPath: z.string().default("/"),
+    tagIds: z.array(z.string()).optional(),
   }),
   capability: {
     name: AvailableTools.UpdateSecret,
@@ -349,6 +360,88 @@ const updateSecretSchema = {
           type: "string",
           description: "The path of the secret to update (Defaults to /)",
         },
+        tagIds: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "IDs of existing project tags to assign; when provided, replaces the secret's current tags",
+        },
+      },
+      required: ["projectId", "environmentSlug", "secretName"],
+    },
+  },
+};
+
+const createSecretTagSchema = {
+  zod: z.object({
+    projectId: z.string(),
+    slug: z.string().trim().min(1).max(64),
+    color: z.string().trim().min(1),
+  }),
+  capability: {
+    name: AvailableTools.CreateSecretTag,
+    annotations: {
+      title: "Create secret tag",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+    },
+    description: "Create a tag in an Infisical project",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: { type: "string", description: "Project ID" },
+        slug: { type: "string", description: "Tag slug (maximum 64 characters)" },
+        color: { type: "string", description: "Tag color, for example #4477AA" },
+      },
+      required: ["projectId", "slug", "color"],
+    },
+  },
+};
+
+const listSecretTagsSchema = {
+  zod: z.object({ projectId: z.string() }),
+  capability: {
+    name: AvailableTools.ListSecretTags,
+    annotations: {
+      title: "List secret tags",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+    },
+    description: "List tags in an Infisical project",
+    inputSchema: {
+      type: "object",
+      properties: { projectId: { type: "string", description: "Project ID" } },
+      required: ["projectId"],
+    },
+  },
+};
+
+const getSecretMetadataSchema = {
+  zod: z.object({
+    projectId: z.string(),
+    environmentSlug: z.string(),
+    secretName: z.string(),
+    secretPath: z.string().default("/"),
+  }),
+  capability: {
+    name: AvailableTools.GetSecretMetadata,
+    annotations: {
+      title: "Get secret metadata",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+    },
+    description:
+      "Get a secret's name, path, and tags without requesting its value",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: { type: "string", description: "Project ID" },
+        environmentSlug: { type: "string", description: "Environment slug" },
+        secretName: { type: "string", description: "Secret name" },
+        secretPath: { type: "string", description: "Secret path (defaults to /)" },
       },
       required: ["projectId", "environmentSlug", "secretName"],
     },
@@ -555,6 +648,38 @@ const createEnvironmentSchema = {
   },
 };
 
+const deleteEnvironmentSchema = {
+  zod: z.object({
+    projectId: z.string(),
+    environmentId: z.string(),
+  }),
+  capability: {
+    name: AvailableTools.DeleteEnvironment,
+    annotations: {
+      title: "Delete environment",
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: true,
+    },
+    description:
+      "Soft-delete an environment in Infisical. Soft-deleted environments can be restored.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: {
+          type: "string",
+          description: "The ID of the project containing the environment (required)",
+        },
+        environmentId: {
+          type: "string",
+          description: "The ID of the environment to soft-delete (required)",
+        },
+      },
+      required: ["projectId", "environmentId"],
+    },
+  },
+};
+
 const createFolderSchema = {
   zod: z.object({
     description: z.string().optional(),
@@ -676,10 +801,14 @@ const allCapabilities = [
   createSecretSchema.capability,
   deleteSecretSchema.capability,
   updateSecretSchema.capability,
+  createSecretTagSchema.capability,
+  listSecretTagsSchema.capability,
+  getSecretMetadataSchema.capability,
   listSecretsSchema.capability,
   getSecretSchema.capability,
   createProjectSchema.capability,
   createEnvironmentSchema.capability,
+  deleteEnvironmentSchema.capability,
   createFolderSchema.capability,
   inviteMembersToProjectSchema.capability,
   listProjectsSchema.capability,
@@ -723,6 +852,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           projectId: data.projectId,
           secretPath: data.secretPath,
           secretValue: data.secretValue ?? "",
+          tagIds: data.tagIds,
         });
 
       return {
@@ -765,17 +895,76 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           environment: data.environmentSlug,
           projectId: data.projectId,
           secretPath: data.secretPath,
-          secretValue: data.secretValue ?? "",
+          ...(data.secretValue !== undefined && { secretValue: data.secretValue }),
+          ...(data.newSecretName !== undefined && { newSecretName: data.newSecretName }),
+          ...(data.tagIds !== undefined && { tagIds: data.tagIds }),
         });
+
+      const updatedSecret =
+        data.tagIds !== undefined &&
+        data.secretValue === undefined &&
+        data.newSecretName === undefined
+          ? {
+              secretKey: secret.secretKey,
+              secretPath: secret.secretPath,
+              tags: secret.tags ?? [],
+            }
+          : maskSecret(secret);
 
       return {
         content: [
           {
             type: "text",
-            text: `Secret updated successfully. Updated secret: ${JSON.stringify(maskSecret(secret), null, 3)}`,
+            text: `Secret updated successfully. Updated secret: ${JSON.stringify(updatedSecret, null, 3)}`,
           },
         ],
       };
+    }
+
+    if (name === AvailableTools.ListSecretTags) {
+      const data = listSecretTagsSchema.zod.parse(args);
+      const hostUrl = env.INFISICAL_HOST_URL.endsWith("/api")
+        ? env.INFISICAL_HOST_URL
+        : `${env.INFISICAL_HOST_URL.replace(/\/$/, "")}/api`;
+      const response = await axios.get(
+        `${hostUrl}/v1/workspace/${encodeURIComponent(data.projectId)}/tags`,
+        { headers: { Authorization: `Bearer ${infisicalSdk.auth().getAccessToken()}` } },
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(response.data?.workspaceTags ?? []) }],
+      };
+    }
+
+    if (name === AvailableTools.CreateSecretTag) {
+      const data = createSecretTagSchema.zod.parse(args);
+      const hostUrl = env.INFISICAL_HOST_URL.endsWith("/api")
+        ? env.INFISICAL_HOST_URL
+        : `${env.INFISICAL_HOST_URL.replace(/\/$/, "")}/api`;
+      const response = await axios.post(
+        `${hostUrl}/v1/workspace/${encodeURIComponent(data.projectId)}/tags`,
+        { slug: data.slug, color: data.color },
+        { headers: { Authorization: `Bearer ${infisicalSdk.auth().getAccessToken()}` } },
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(response.data?.workspaceTag ?? response.data) }],
+      };
+    }
+
+    if (name === AvailableTools.GetSecretMetadata) {
+      const data = getSecretMetadataSchema.zod.parse(args);
+      const secret = await infisicalSdk.secrets().getSecret({
+        environment: data.environmentSlug,
+        projectId: data.projectId,
+        secretName: data.secretName,
+        secretPath: data.secretPath,
+        viewSecretValue: false,
+      });
+      const metadata = {
+        secretKey: secret.secretKey,
+        secretPath: secret.secretPath,
+        tags: secret.tags ?? [],
+      };
+      return { content: [{ type: "text", text: JSON.stringify(metadata) }] };
     }
 
     if (name === AvailableTools.ListSecrets) {
@@ -882,6 +1071,32 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           {
             type: "text",
             text: `Environment created successfully: ${JSON.stringify(environment, null, 3)}`,
+          },
+        ],
+      };
+    }
+
+    if (name === AvailableTools.DeleteEnvironment) {
+      const data = deleteEnvironmentSchema.zod.parse(args);
+      const hostUrl = env.INFISICAL_HOST_URL.endsWith("/api")
+        ? env.INFISICAL_HOST_URL
+        : `${env.INFISICAL_HOST_URL.replace(/\/$/, "")}/api`;
+
+      const response = await axios.delete(
+        `${hostUrl}/v1/workspace/${encodeURIComponent(data.projectId)}/environments/${encodeURIComponent(data.environmentId)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${infisicalSdk.auth().getAccessToken()}`,
+          },
+        },
+      );
+
+      const deletedEnvironment = response.data?.environment;
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Environment soft-deleted successfully (ID: ${data.environmentId}${deletedEnvironment?.slug ? `, slug: ${deletedEnvironment.slug}` : ""}).`,
           },
         ],
       };
