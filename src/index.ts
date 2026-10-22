@@ -21,6 +21,8 @@ enum AvailableTools {
   CreateSecret = "create-secret",
   DeleteSecret = "delete-secret",
   UpdateSecret = "update-secret",
+  CreateSecretTag = "create-secret-tag",
+  ListSecretTags = "list-secret-tags",
   ListSecrets = "list-secrets",
   GetSecret = "get-secret",
   CreateProject = "create-project",
@@ -219,6 +221,7 @@ const createSecretSchema = {
     secretName: z.string(),
     secretValue: z.string().optional(),
     secretPath: z.string().default("/"),
+    tagIds: z.array(z.string()).optional(),
   }),
   capability: {
     name: AvailableTools.CreateSecret,
@@ -253,6 +256,11 @@ const createSecretSchema = {
         secretPath: {
           type: "string",
           description: "The path of the secret to create (Defaults to /)",
+        },
+        tagIds: {
+          type: "array",
+          items: { type: "string" },
+          description: "IDs of existing project tags to assign to the secret",
         },
       },
       required: ["projectId", "environmentSlug", "secretName"],
@@ -311,6 +319,7 @@ const updateSecretSchema = {
     newSecretName: z.string().optional(),
     secretValue: z.string().optional(),
     secretPath: z.string().default("/"),
+    tagIds: z.array(z.string()).optional(),
   }),
   capability: {
     name: AvailableTools.UpdateSecret,
@@ -350,8 +359,60 @@ const updateSecretSchema = {
           type: "string",
           description: "The path of the secret to update (Defaults to /)",
         },
+        tagIds: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "IDs of existing project tags to assign; when provided, replaces the secret's current tags",
+        },
       },
       required: ["projectId", "environmentSlug", "secretName"],
+    },
+  },
+};
+
+const createSecretTagSchema = {
+  zod: z.object({
+    projectId: z.string(),
+    slug: z.string().trim().min(1).max(64),
+    color: z.string().trim().min(1),
+  }),
+  capability: {
+    name: AvailableTools.CreateSecretTag,
+    annotations: {
+      title: "Create secret tag",
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false,
+    },
+    description: "Create a tag in an Infisical project",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: { type: "string", description: "Project ID" },
+        slug: { type: "string", description: "Tag slug (maximum 64 characters)" },
+        color: { type: "string", description: "Tag color, for example #4477AA" },
+      },
+      required: ["projectId", "slug", "color"],
+    },
+  },
+};
+
+const listSecretTagsSchema = {
+  zod: z.object({ projectId: z.string() }),
+  capability: {
+    name: AvailableTools.ListSecretTags,
+    annotations: {
+      title: "List secret tags",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+    },
+    description: "List tags in an Infisical project",
+    inputSchema: {
+      type: "object",
+      properties: { projectId: { type: "string", description: "Project ID" } },
+      required: ["projectId"],
     },
   },
 };
@@ -709,6 +770,8 @@ const allCapabilities = [
   createSecretSchema.capability,
   deleteSecretSchema.capability,
   updateSecretSchema.capability,
+  createSecretTagSchema.capability,
+  listSecretTagsSchema.capability,
   listSecretsSchema.capability,
   getSecretSchema.capability,
   createProjectSchema.capability,
@@ -757,6 +820,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           projectId: data.projectId,
           secretPath: data.secretPath,
           secretValue: data.secretValue ?? "",
+          tagIds: data.tagIds,
         });
 
       return {
@@ -799,7 +863,9 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           environment: data.environmentSlug,
           projectId: data.projectId,
           secretPath: data.secretPath,
-          secretValue: data.secretValue ?? "",
+          ...(data.secretValue !== undefined && { secretValue: data.secretValue }),
+          ...(data.newSecretName !== undefined && { newSecretName: data.newSecretName }),
+          ...(data.tagIds !== undefined && { tagIds: data.tagIds }),
         });
 
       return {
@@ -809,6 +875,35 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             text: `Secret updated successfully. Updated secret: ${JSON.stringify(maskSecret(secret), null, 3)}`,
           },
         ],
+      };
+    }
+
+    if (name === AvailableTools.ListSecretTags) {
+      const data = listSecretTagsSchema.zod.parse(args);
+      const hostUrl = env.INFISICAL_HOST_URL.endsWith("/api")
+        ? env.INFISICAL_HOST_URL
+        : `${env.INFISICAL_HOST_URL.replace(/\/$/, "")}/api`;
+      const response = await axios.get(
+        `${hostUrl}/v1/workspace/${encodeURIComponent(data.projectId)}/tags`,
+        { headers: { Authorization: `Bearer ${infisicalSdk.auth().getAccessToken()}` } },
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(response.data?.workspaceTags ?? []) }],
+      };
+    }
+
+    if (name === AvailableTools.CreateSecretTag) {
+      const data = createSecretTagSchema.zod.parse(args);
+      const hostUrl = env.INFISICAL_HOST_URL.endsWith("/api")
+        ? env.INFISICAL_HOST_URL
+        : `${env.INFISICAL_HOST_URL.replace(/\/$/, "")}/api`;
+      const response = await axios.post(
+        `${hostUrl}/v1/workspace/${encodeURIComponent(data.projectId)}/tags`,
+        { slug: data.slug, color: data.color },
+        { headers: { Authorization: `Bearer ${infisicalSdk.auth().getAccessToken()}` } },
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(response.data?.workspaceTag ?? response.data) }],
       };
     }
 
