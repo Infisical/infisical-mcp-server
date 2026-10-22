@@ -1,10 +1,5 @@
 #!/usr/bin/env node
 
-import type {
-  GetSecretResponse,
-  ListSecretsResponse,
-  Secret,
-} from "@infisical/sdk";
 import fs from "fs";
 import axios from "axios";
 import path from "path";
@@ -226,6 +221,22 @@ const getTokenTimes = (expiresIn: number | undefined, requestedAt: number) => {
 const API_TIMEOUT_MS = 10 * 1000;
 const API_MAX_RETRIES = 4;
 const API_RETRY_DELAY_MS = 1000;
+
+// the fields of a secret this server reads. Infisical returns more, which pass
+// through to the response as they are
+type Secret = { secretKey: string; secretValue: string; [field: string]: unknown };
+
+type GetSecretResponse = { secret: Secret };
+
+type ListSecretsResponse = {
+  secrets: Secret[];
+  imports?: {
+    secretPath: string;
+    environment: string;
+    folderId?: string;
+    secrets: Secret[];
+  }[];
+};
 
 // a write to an environment with a change policy returns a change request
 // instead of the secret, and only takes effect once it is approved
