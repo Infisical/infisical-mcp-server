@@ -23,6 +23,7 @@ enum AvailableTools {
   UpdateSecret = "update-secret",
   CreateSecretTag = "create-secret-tag",
   ListSecretTags = "list-secret-tags",
+  GetSecretMetadata = "get-secret-metadata",
   ListSecrets = "list-secrets",
   GetSecret = "get-secret",
   CreateProject = "create-project",
@@ -417,6 +418,36 @@ const listSecretTagsSchema = {
   },
 };
 
+const getSecretMetadataSchema = {
+  zod: z.object({
+    projectId: z.string(),
+    environmentSlug: z.string(),
+    secretName: z.string(),
+    secretPath: z.string().default("/"),
+  }),
+  capability: {
+    name: AvailableTools.GetSecretMetadata,
+    annotations: {
+      title: "Get secret metadata",
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+    },
+    description:
+      "Get a secret's name, path, and tags without requesting its value",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: { type: "string", description: "Project ID" },
+        environmentSlug: { type: "string", description: "Environment slug" },
+        secretName: { type: "string", description: "Secret name" },
+        secretPath: { type: "string", description: "Secret path (defaults to /)" },
+      },
+      required: ["projectId", "environmentSlug", "secretName"],
+    },
+  },
+};
+
 const listSecretsSchema = {
   zod: z.object({
     projectId: z.string(),
@@ -772,6 +803,7 @@ const allCapabilities = [
   updateSecretSchema.capability,
   createSecretTagSchema.capability,
   listSecretTagsSchema.capability,
+  getSecretMetadataSchema.capability,
   listSecretsSchema.capability,
   getSecretSchema.capability,
   createProjectSchema.capability,
@@ -905,6 +937,23 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       return {
         content: [{ type: "text", text: JSON.stringify(response.data?.workspaceTag ?? response.data) }],
       };
+    }
+
+    if (name === AvailableTools.GetSecretMetadata) {
+      const data = getSecretMetadataSchema.zod.parse(args);
+      const secret = await infisicalSdk.secrets().getSecret({
+        environment: data.environmentSlug,
+        projectId: data.projectId,
+        secretName: data.secretName,
+        secretPath: data.secretPath,
+        viewSecretValue: false,
+      });
+      const metadata = {
+        secretKey: secret.secretKey,
+        secretPath: secret.secretPath,
+        tags: secret.tags ?? [],
+      };
+      return { content: [{ type: "text", text: JSON.stringify(metadata) }] };
     }
 
     if (name === AvailableTools.ListSecrets) {
