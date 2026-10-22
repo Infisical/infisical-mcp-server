@@ -151,6 +151,7 @@ const startApi = async (respond) => {
         query: Object.fromEntries(url.searchParams),
         body: raw ? JSON.parse(raw) : undefined,
         authorization: req.headers.authorization,
+        userAgent: req.headers["user-agent"],
       };
       requests.push(request);
 
@@ -1289,6 +1290,15 @@ describe("authentication", () => {
     assert.match(await callError("list-secrets", SECRET_LOCATION), /401: Token expired/);
 
     assert.equal(api.requests.length, 2);
+  });
+
+  test("sends its name and version as the user agent", async (t) => {
+    const { call, api } = await setup(t);
+    const userAgent = `infisical-mcp-server/${require("../package.json").version}`;
+
+    await call("list-secrets", SECRET_LOCATION);
+
+    assert.deepEqual(api.requests.map((request) => request.userAgent), [userAgent, userAgent]);
   });
 
   test("uses a configured access token without logging in", async (t) => {

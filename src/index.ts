@@ -79,6 +79,10 @@ const packageJson = JSON.parse(
   fs.readFileSync(path.join(__dirname, "../package.json"), "utf-8"),
 ) as { version: string };
 
+// lets Infisical count this server's traffic, the way it already recognises
+// "k8-operator/<version>"
+const USER_AGENT = `infisical-mcp-server/${packageJson.version}`;
+
 export const getEnvironmentVariables = (
   source: NodeJS.ProcessEnv = process.env,
 ) => {
@@ -1010,9 +1014,10 @@ export const createServer = (
           data,
           signal: isRead ? signal : undefined,
           timeout: requestTimeoutMs,
-          headers: withoutToken
-            ? {}
-            : { Authorization: `Bearer ${accessToken}` },
+          headers: {
+            "User-Agent": USER_AGENT,
+            ...(!withoutToken && { Authorization: `Bearer ${accessToken}` }),
+          },
         });
 
         return res.data;
