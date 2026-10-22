@@ -127,6 +127,7 @@ The server talks to its MCP client over stdio and opens no ports. Its only outbo
 | Endpoint                                              | Used by                                                         |
 | ----------------------------------------------------- | --------------------------------------------------------------- |
 | `POST /api/v1/auth/universal-auth/login`              | Universal auth login                                            |
+| `POST /api/v1/auth/token/renew`                       | Universal auth token renewal                                    |
 | `GET /api/v4/secrets`                                 | `list-secrets`                                                  |
 | `GET, POST, PATCH, DELETE /api/v4/secrets/{name}`     | `get-secret`, `create-secret`, `update-secret`, `delete-secret` |
 | `/api/v3/secrets/raw`, `/api/v3/secrets/raw/{name}`   | The same tools, on self-hosted versions before v0.150.0         |

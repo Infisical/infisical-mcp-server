@@ -98,8 +98,15 @@ export const getEnvironmentVariables = (
         .url()
         .default("https://app.infisical.com")
         // the API is under <host>/api, so the host is kept without a trailing
-        // slash or /api, whichever way it was given
-        .transform((url) => url.replace(/\/+$/, "").replace(/\/api$/, "")),
+        // slash or /api, whichever way it was given. only the path is trimmed,
+        // so a host that is itself called api keeps its name
+        .transform((url) => {
+          const parsed = new URL(url);
+          parsed.pathname = parsed.pathname
+            .replace(/\/+$/, "")
+            .replace(/\/api$/, "");
+          return parsed.toString().replace(/\/+$/, "");
+        }),
       INFISICAL_ENABLED_TOOLS: z
         .string()
         .trim()

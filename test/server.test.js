@@ -276,6 +276,8 @@ describe("configuration", () => {
       ["https://infisical.example.com/api", "https://infisical.example.com"],
       ["https://infisical.example.com/api/", "https://infisical.example.com"],
       ["https://example.com/infisical/api/", "https://example.com/infisical"],
+      // a host that is itself called api, as an internal service name can be
+      ["http://api/", "http://api"],
     ]) {
       assert.equal(parse({ INFISICAL_HOST_URL: hostUrl }).INFISICAL_HOST_URL, expected, hostUrl);
     }
