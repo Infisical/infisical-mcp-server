@@ -900,11 +900,22 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
           ...(data.tagIds !== undefined && { tagIds: data.tagIds }),
         });
 
+      const updatedSecret =
+        data.tagIds !== undefined &&
+        data.secretValue === undefined &&
+        data.newSecretName === undefined
+          ? {
+              secretKey: secret.secretKey,
+              secretPath: secret.secretPath,
+              tags: secret.tags ?? [],
+            }
+          : maskSecret(secret);
+
       return {
         content: [
           {
             type: "text",
-            text: `Secret updated successfully. Updated secret: ${JSON.stringify(maskSecret(secret), null, 3)}`,
+            text: `Secret updated successfully. Updated secret: ${JSON.stringify(updatedSecret, null, 3)}`,
           },
         ],
       };
