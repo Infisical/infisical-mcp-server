@@ -89,7 +89,7 @@ Both variables are optional, and their defaults keep the server's existing behav
 - `INFISICAL_MASK_SECRET_VALUES`: `true` or `false`, case-insensitive. Defaults to `false`. When `true`, secret values in tool responses are replaced with `<masked>`, keeping secret material out of the model's context. Secret names, paths, and other metadata are still returned.
 - `delete-environment` always performs a soft delete; hard deletion is intentionally not exposed by this MCP tool. The environment can be restored through the Infisical API or UI where supported.
 - `update-secret` preserves the existing secret value when `secretValue` is omitted. Supplying `tagIds` replaces the current assigned tags; use `get-secret-metadata` to read current tag slugs without the secret value, then `list-secret-tags` to map slugs to project tag IDs before merging and assigning tags. Tags are organizational metadata, not access controls.
-- `create-secret-tag` requires a project ID, tag slug, and color. Infisical tags are scoped to a project. `get-secret-metadata` explicitly asks the API not to return the secret value.
+- `create-secret-tag` requires a project ID, tag slug, and color. Infisical tags are scoped to a project. `get-secret-metadata` explicitly asks the API not to return the secret value. A tag-only `update-secret` response is limited to the key, path, and assigned tags.
 
 Scope the machine identity to only the projects and environments the server needs, rather than using a token with broader access than the exposed tools require.
 
