@@ -821,9 +821,11 @@ const listProjectsSchema = {
 const inviteMembersToProjectSchema = {
   zod: z.object({
     projectId: pathSegmentSchema("Project ID"),
-    emails: z.array(z.string()).optional(),
-    usernames: z.array(z.string()).optional(),
-    roleSlugs: z.array(z.string()).optional(),
+    // the cap Infisical puts on an org invite. a bound also lets zod refuse
+    // an oversized array before it checks every element
+    emails: z.array(z.string()).max(100).optional(),
+    usernames: z.array(z.string()).max(100).optional(),
+    roleSlugs: z.array(z.string()).max(100).optional(),
   }),
   capability: {
     name: AvailableTools.InviteMembersToProject,
@@ -1459,7 +1461,7 @@ export const createServer = (
     } catch (err) {
       if (err instanceof z.ZodError) {
         throw new Error(
-          `Invalid arguments: ${err.errors.map((e) => `${e.path.join(".")}: ${e.message}`).join(", ")}`,
+          `Invalid arguments: ${err.issues.map((e) => `${e.path.join(".")}: ${e.message}`).join(", ")}`,
         );
       }
       throw err;

@@ -306,7 +306,7 @@ describe("configuration", () => {
     test(`refuses to start with ${description}`, () => {
       assert.throws(
         () => parse(env),
-        (err) => err.errors.some((issue) => message.test(issue.message)),
+        (err) => err.issues.some((issue) => message.test(issue.message)),
       );
     });
   }
@@ -750,6 +750,22 @@ describe("projects, environments, folders and members", () => {
     assert.equal(secretRequests().length, 0);
   });
 
+  test("invite-members-to-project refuses more than 100 entries without checking each one", async (t) => {
+    const { callError, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    for (const field of ["emails", "usernames", "roleSlugs"]) {
+      assert.equal(
+        await callError("invite-members-to-project", {
+          projectId: "project-1",
+          usernames: ["dev"],
+          [field]: Array(101).fill(0),
+        }),
+        `Invalid arguments: ${field}: Too big: expected array to have <=100 items`,
+      );
+    }
+    assert.equal(secretRequests().length, 0);
+  });
+
   test("rejects project IDs that no URL can address", async (t) => {
     const { callError, secretRequests } = await setup(t, { env: ALL_TOOLS });
 
@@ -817,7 +833,7 @@ describe("errors", () => {
 
     assert.match(
       await callError("get-secret", { environmentSlug: "dev", secretName: "DB_PASSWORD" }),
-      /Invalid arguments: projectId: Required/,
+      /Invalid arguments: projectId: Invalid input: expected string, received undefined/,
     );
     assert.equal(secretRequests().length, 0);
   });
