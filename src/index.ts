@@ -385,15 +385,19 @@ const auditedArguments = (args: Record<string, unknown> | undefined) => {
   return audited;
 };
 
-// the name travels in the URL path, where a blank one or "." and ".." would
-// address a different route. Infisical accepts "." as a name, but no URL can
-// reach a secret called that, so refuse it before sending anything
-const secretNameSchema = z
-  .string()
-  .refine(
-    (name) => name.trim() !== "" && name !== "." && name !== "..",
-    'Secret name cannot be blank, "." or ".."',
-  );
+// a value that travels in the URL path, where a blank one or "." and ".."
+// would address a different route
+const pathSegmentSchema = (label: string) =>
+  z
+    .string()
+    .refine(
+      (value) => value.trim() !== "" && value !== "." && value !== "..",
+      `${label} cannot be blank, "." or ".."`,
+    );
+
+// Infisical accepts "." as a name, but no URL can reach a secret called
+// that, so refuse it before sending anything
+const secretNameSchema = pathSegmentSchema("Secret name");
 
 const createSecretSchema = {
   zod: z.object({
@@ -699,7 +703,7 @@ const createProjectSchema = {
 
 const createEnvironmentSchema = {
   zod: z.object({
-    projectId: z.string(),
+    projectId: pathSegmentSchema("Project ID"),
     name: z.string(),
     slug: z.string(),
     position: z.number().optional(),
@@ -816,7 +820,7 @@ const listProjectsSchema = {
 
 const inviteMembersToProjectSchema = {
   zod: z.object({
-    projectId: z.string(),
+    projectId: pathSegmentSchema("Project ID"),
     emails: z.array(z.string()).optional(),
     usernames: z.array(z.string()).optional(),
     roleSlugs: z.array(z.string()).optional(),

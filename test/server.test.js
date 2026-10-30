@@ -749,6 +749,22 @@ describe("projects, environments, folders and members", () => {
     );
     assert.equal(secretRequests().length, 0);
   });
+
+  test("rejects project IDs that no URL can address", async (t) => {
+    const { callError, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    for (const projectId of ["", " ", ".", ".."]) {
+      assert.match(
+        await callError("create-environment", { projectId, name: "Staging", slug: "staging" }),
+        /Invalid arguments: projectId/,
+      );
+      assert.match(
+        await callError("invite-members-to-project", { projectId, emails: ["dev@example.com"] }),
+        /Invalid arguments: projectId/,
+      );
+    }
+    assert.equal(secretRequests().length, 0);
+  });
 });
 
 describe("errors", () => {
