@@ -22,22 +22,52 @@ jobs:
             - name: Setup Node
               uses: actions/setup-node@8f152de45cc393bb48ce5d89d36b731f54556e65 # v4.0.0
               with:
-                node-version: '24.14.0'
+                node-version: '24.22.1'
                 cache: "npm"
-                cache-dependency-path: package-lock.json
+                cache-dependency-path: npm-shrinkwrap.json
                 registry-url: "https://registry.npmjs.org"
 
             - name: Install dependencies
               run: npm ci
 
-            - name: Set NPM version
-              run: npm version ${{ github.ref_name }} --allow-same-version --no-git-tag-version
+            # the version is bumped in package.json before tagging, so the
+            # repository always shows the version that shipped
+            - name: Check the tag matches package.json
+              env:
+                TAG: ${{ github.ref_name }}
+              run: |
+                VERSION=$(node -p "require('./package.json').version")
+                if [ "$TAG" != "$VERSION" ]; then
+                  echo "::error::Tag $TAG does not match version $VERSION in package.json. Bump the version before tagging."
+                  exit 1
+                fi
+
+            # a tag can point at a commit the checks workflow never ran on
+            - name: Typecheck
+              run: npm run typecheck
 
             - name: Build MCP Server
               run: npm run build
 
-            - name: Pack NPM
-              run: npm pack
+            - name: Test
+              run: npm test --ignore-scripts
 
+            # ships inside the package, so it is covered by the provenance attestation
+            - name: Generate SBOM
+              run: npm sbom --omit dev --sbom-format cyclonedx --sbom-type application > sbom.cdx.json
+
+            # npm has no --tarball option and ignored it, publishing this directory
+            # rather than the packed tarball; say so instead of relying on it
             - name: Publish NPM
-              run: npm publish --tarball=./infisical-mcp-${{github.ref_name}} --access public
+              run: npm publish --access public
+
+            - name: Attach SBOM to the GitHub release
+              env:
+                GH_TOKEN: ${{ github.token }}
+                TAG: ${{ github.ref_name }}
+              run: |
+                if gh release view "$TAG" > /dev/null 2>&1; then
+                  gh release upload "$TAG" sbom.cdx.json --clobber
+                else
+                  echo "::warning::No GitHub release exists for $TAG, so the SBOM is only in the npm package."
+                fi
