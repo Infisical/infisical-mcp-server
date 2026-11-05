@@ -442,7 +442,7 @@ const createEnvironmentSchema = {
 const createFolderSchema = {
   zod: z.object({
     description: z.string().optional(),
-    environment: z.string(),
+    environmentSlug: z.string(),
     name: z.string(),
     path: z.string().default("/"),
     projectId: z.string(),
@@ -457,7 +457,7 @@ const createFolderSchema = {
           type: "string",
           description: "The description of the folder to create",
         },
-        environment: {
+        environmentSlug: {
           type: "string",
           description: "The environment to create the folder in (required)",
         },
@@ -474,7 +474,7 @@ const createFolderSchema = {
           description: "The project to create the folder in (required)",
         },
       },
-      required: ["name", "projectId", "environment"],
+      required: ["name", "projectId", "environmentSlug"],
     },
   },
 };
@@ -482,7 +482,7 @@ const createFolderSchema = {
 const listFoldersSchema = {
   zod: z.object({
     projectId: z.string(),
-    environment: z.string(),
+    environmentSlug: z.string(),
     path: z.string().default("/"),
     recursive: z.boolean().default(false),
   }),
@@ -498,7 +498,7 @@ const listFoldersSchema = {
           description:
             "The ID of the project to list the folders from (required)",
         },
-        environment: {
+        environmentSlug: {
           type: "string",
           description:
             "The slug of the environment to list the folders from (required)",
@@ -513,7 +513,7 @@ const listFoldersSchema = {
             "Whether to recursively list all sub-folders under the given path (Defaults to false)",
         },
       },
-      required: ["projectId", "environment"],
+      required: ["projectId", "environmentSlug"],
     },
   },
 };
@@ -778,7 +778,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
       const folder = await infisicalSdk.folders().create({
         description: data.description,
-        environment: data.environment,
+        environment: data.environmentSlug,
         name: data.name,
         path: data.path,
         projectId: data.projectId,
@@ -798,7 +798,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
       const data = listFoldersSchema.zod.parse(args);
 
       const folders = await infisicalSdk.folders().listFolders({
-        environment: data.environment,
+        environment: data.environmentSlug,
         projectId: data.projectId,
         path: data.path,
         recursive: data.recursive,
