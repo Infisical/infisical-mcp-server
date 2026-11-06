@@ -753,8 +753,8 @@ const createEnvironmentSchema = {
 const createFolderSchema = {
   zod: z.object({
     description: z.string().optional(),
-    environmentSlug: z.string().optional(),
-    environment: z.string().optional(),
+    environmentSlug: z.string().min(1).optional(),
+    environment: z.string().min(1).optional(),
     name: z.string(),
     path: z.string().default("/"),
     projectId: z.string(),
@@ -784,10 +784,12 @@ const createFolderSchema = {
         },
         environmentSlug: {
           type: "string",
+          minLength: 1,
           description: "The environment slug (preferred; environment is a legacy alias)",
         },
         environment: {
           type: "string",
+          minLength: 1,
           description: "The environment to create the folder in (required)",
         },
         name: {

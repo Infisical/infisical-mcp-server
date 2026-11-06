@@ -1533,6 +1533,15 @@ describe("recursive discovery", () => {
     const count = secretRequests().length;
     await callError("create-folder", { projectId: "project-1", name: "folder" });
     await callError("create-folder", { projectId: "project-1", name: "folder", environment: "prod", environmentSlug: "dev" });
+    for (const environment of [
+      { environmentSlug: "" },
+      { environment: "" },
+      { environmentSlug: "", environment: "dev" },
+      { environmentSlug: "dev", environment: "" },
+      { environmentSlug: "", environment: "" },
+    ]) {
+      await callError("create-folder", { projectId: "project-1", name: "folder", ...environment });
+    }
     assert.equal(secretRequests().length, count);
   });
 });
