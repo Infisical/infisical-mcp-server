@@ -259,7 +259,7 @@ describe("configuration", () => {
   // the hardening controls are opt-in, so an existing setup keeps working
   test("defaults to every tool, unmasked values and an audit log", () => {
     const env = parse({});
-    assert.equal(env.INFISICAL_ENABLED_TOOLS.length, 10);
+    assert.equal(env.INFISICAL_ENABLED_TOOLS.length, 11);
     assert.equal(env.INFISICAL_MASK_SECRET_VALUES, false);
     assert.equal(env.INFISICAL_AUDIT_LOG, true);
   });
@@ -284,15 +284,15 @@ describe("configuration", () => {
   });
 
   test("exposes every tool for all", () => {
-    assert.equal(parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length, 10);
+    assert.equal(parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length, 11);
   });
 
   test("gives each parse its own tool list", () => {
     parse({}).INFISICAL_ENABLED_TOOLS.length = 0;
     parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length = 0;
 
-    assert.equal(parse({}).INFISICAL_ENABLED_TOOLS.length, 10);
-    assert.equal(parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length, 10);
+    assert.equal(parse({}).INFISICAL_ENABLED_TOOLS.length, 11);
+    assert.equal(parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length, 11);
   });
 
   for (const [description, env, message] of [
@@ -328,7 +328,7 @@ describe("tool gating", () => {
     const { client } = await setup(t);
 
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 10);
+    assert.equal(tools.length, 11);
   });
 
   test("lists only tools that read under the read-only allowlist", async (t) => {
@@ -383,8 +383,8 @@ describe("reading secrets", () => {
     assert.equal(request.query.secretPath, "/");
 
     const response = JSON.parse(text);
-    assert.deepEqual(response.secrets, [{ secretKey: "DB_PASSWORD", secretValue: MASKED_VALUE }]);
-    assert.deepEqual(response.imports[0].secrets, [{ secretKey: "SHARED_KEY", secretValue: MASKED_VALUE }]);
+    assert.deepEqual(response.secrets, [{ secretKey: "DB_PASSWORD", secretValue: MASKED_VALUE, secretPath: "/" }]);
+    assert.deepEqual(response.imports[0].secrets, [{ secretKey: "SHARED_KEY", secretValue: MASKED_VALUE, secretPath: "/shared" }]);
     assert.ok(!text.includes("hidden-by-infisical"));
   });
 
@@ -1487,6 +1487,61 @@ describe("the stdio server", () => {
     await request(2, "tools/call", { name: "list-secrets", arguments: SECRET_LOCATION });
     const { result } = await request(3, "tools/list");
 
-    assert.equal(result.tools.length, 10);
+    assert.equal(result.tools.length, 11);
+  });
+});
+
+
+describe("recursive discovery", () => {
+  test("recursive secret responses preserve paths for duplicate keys and imports", async (t) => {
+    const { call, secretRequests } = await setup(t, { env: MASKED, respond: (request) => {
+      if (request.path === "/api/v4/secrets") return [200, {
+        secrets: [
+          { secretKey: "KEY", secretValue: SECRET_VALUE, secretPath: "/a" },
+          { secretKey: "KEY", secretValue: SECRET_VALUE, secretPath: "/b" },
+        ],
+        imports: [{ secretPath: "/shared", environment: "dev", secrets: [
+          { secretKey: "KEY", secretValue: SECRET_VALUE, secretPath: "/shared/nested" },
+        ] }],
+      }];
+    }});
+    const result = JSON.parse(await call("list-secrets", { ...SECRET_LOCATION, recursive: true }));
+    assert.equal(secretRequests()[0].query.recursive, "true");
+    assert.deepEqual(result.secrets.map(s => s.secretPath), ["/a", "/b"]);
+    assert.equal(result.imports[0].secrets[0].secretPath, "/shared/nested");
+    assert.ok(result.secrets.every(s => s.secretValue === MASKED_VALUE));
+  });
+
+  test("list-folders is read-only and forwards recursive and parent path", async (t) => {
+    const folders = [{ id: "folder-1", name: "backend", parentId: "root" }];
+    const { call, client, secretRequests } = await setup(t, { respond: (request) => {
+      if (request.method === "GET" && request.path === "/api/v1/folders") return [200, { folders }];
+    }});
+    const tool = (await client.listTools()).tools.find(t => t.name === "list-folders");
+    assert.equal(tool.annotations.readOnlyHint, true);
+    const result = JSON.parse(await call("list-folders", { ...SECRET_LOCATION, path: "/apps", recursive: true }));
+    assert.deepEqual(result.folders, folders);
+    assert.deepEqual(secretRequests()[0].query, { workspaceId: "project-1", environment: "dev", path: "/apps", recursive: "true" });
+  });
+
+  test("create-folder accepts the canonical name and keeps the legacy alias", async (t) => {
+    const { call, callError, secretRequests } = await setup(t);
+    for (const environment of [{ environmentSlug: "dev" }, { environment: "dev" }]) {
+      await call("create-folder", { projectId: "project-1", name: "folder", ...environment });
+      assert.equal(secretRequests().at(-1).body.environment, "dev");
+    }
+    const count = secretRequests().length;
+    await callError("create-folder", { projectId: "project-1", name: "folder" });
+    await callError("create-folder", { projectId: "project-1", name: "folder", environment: "prod", environmentSlug: "dev" });
+    for (const environment of [
+      { environmentSlug: "" },
+      { environment: "" },
+      { environmentSlug: "", environment: "dev" },
+      { environmentSlug: "dev", environment: "" },
+      { environmentSlug: "", environment: "" },
+    ]) {
+      await callError("create-folder", { projectId: "project-1", name: "folder", ...environment });
+    }
+    assert.equal(secretRequests().length, count);
   });
 });

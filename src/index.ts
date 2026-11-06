@@ -29,6 +29,7 @@ enum AvailableTools {
   CreateProject = "create-project",
   CreateEnvironment = "create-environment",
   CreateFolder = "create-folder",
+  ListFolders = "list-folders",
   InviteMembersToProject = "invite-members-to-project",
   ListProjects = "list-projects",
 }
@@ -551,6 +552,7 @@ const listSecretsSchema = {
     secretPath: z.string().default("/"),
     expandSecretReferences: z.boolean().default(true),
     includeImports: z.boolean().default(true),
+    recursive: z.boolean().default(false),
   }),
   capability: {
     name: AvailableTools.ListSecrets,
@@ -582,6 +584,10 @@ const listSecretsSchema = {
         expandSecretReferences: {
           type: "boolean",
           description: "Whether to expand secret references (Defaults to true)",
+        },
+        recursive: {
+          type: "boolean",
+          description: "List secrets from sub-folders recursively (Defaults to false)",
         },
         includeImports: {
           type: "boolean",
@@ -747,11 +753,19 @@ const createEnvironmentSchema = {
 const createFolderSchema = {
   zod: z.object({
     description: z.string().optional(),
-    environment: z.string(),
+    environmentSlug: z.string().min(1).optional(),
+    environment: z.string().min(1).optional(),
     name: z.string(),
     path: z.string().default("/"),
     projectId: z.string(),
-  }),
+  }).superRefine((data, ctx) => {
+    if (!data.environmentSlug && !data.environment) {
+      ctx.addIssue({ code: "custom", path: ["environmentSlug"], message: "environmentSlug or environment is required" });
+    }
+    if (data.environmentSlug && data.environment && data.environmentSlug !== data.environment) {
+      ctx.addIssue({ code: "custom", path: ["environment"], message: "environment and environmentSlug must match" });
+    }
+  }).transform((data) => ({ ...data, environmentSlug: data.environmentSlug ?? data.environment! })),
   capability: {
     name: AvailableTools.CreateFolder,
     annotations: {
@@ -768,8 +782,14 @@ const createFolderSchema = {
           type: "string",
           description: "The description of the folder to create",
         },
+        environmentSlug: {
+          type: "string",
+          minLength: 1,
+          description: "The environment slug (preferred; environment is a legacy alias)",
+        },
         environment: {
           type: "string",
+          minLength: 1,
           description: "The environment to create the folder in (required)",
         },
         name: {
@@ -785,7 +805,32 @@ const createFolderSchema = {
           description: "The project to create the folder in (required)",
         },
       },
-      required: ["name", "projectId", "environment"],
+      required: ["name", "projectId"],
+      anyOf: [{ required: ["environmentSlug"] }, { required: ["environment"] }],
+    },
+  },
+};
+
+const listFoldersSchema = {
+  zod: z.object({
+    projectId: z.string(),
+    environmentSlug: z.string(),
+    path: z.string().default("/"),
+    recursive: z.boolean().default(false),
+  }),
+  capability: {
+    name: AvailableTools.ListFolders,
+    annotations: { title: "List folders", readOnlyHint: true, destructiveHint: false, idempotentHint: true },
+    description: "List folders in a project and environment, optionally recursively",
+    inputSchema: {
+      type: "object",
+      properties: {
+        projectId: { type: "string", description: "Project ID" },
+        environmentSlug: { type: "string", description: "Environment slug" },
+        path: { type: "string", description: "Parent path (Defaults to /)" },
+        recursive: { type: "boolean", description: "Include sub-folders (Defaults to false)" },
+      },
+      required: ["projectId", "environmentSlug"],
     },
   },
 };
@@ -872,6 +917,7 @@ const allCapabilities = [
   createProjectSchema.capability,
   createEnvironmentSchema.capability,
   createFolderSchema.capability,
+  listFoldersSchema.capability,
   inviteMembersToProjectSchema.capability,
   listProjectsSchema.capability,
 ];
@@ -1280,7 +1326,7 @@ export const createServer = (
         const secrets = await secretRequest<ListSecretsResponse>(
           "GET",
           undefined,
-          { params: secretReadParams(data) },
+          { params: { ...secretReadParams(data), recursive: String(data.recursive) } },
           signal,
         );
 
@@ -1289,6 +1335,7 @@ export const createServer = (
             maskSecret({
               secretKey: secret.secretKey,
               secretValue: secret.secretValue,
+              secretPath: secret.secretPath ?? data.secretPath,
             }),
           ),
           ...(secrets.imports && {
@@ -1297,6 +1344,7 @@ export const createServer = (
                 maskSecret({
                   secretKey: secret.secretKey,
                   secretValue: secret.secretValue,
+                  secretPath: secret.secretPath ?? imp.secretPath,
                 }),
               );
 
@@ -1374,7 +1422,7 @@ export const createServer = (
           {
             data: {
               workspaceId: data.projectId,
-              environment: data.environment,
+              environment: data.environmentSlug,
               name: data.name,
               path: data.path,
               description: data.description,
@@ -1384,6 +1432,16 @@ export const createServer = (
         );
 
         return textResult(`Folder created successfully: ${JSON.stringify(folder, null, 3)}`);
+      }
+
+      if (name === AvailableTools.ListFolders) {
+        const data = listFoldersSchema.zod.parse(args);
+        const response = await apiRequest<{ folders: { id: string; name: string; parentId?: string }[] }>(
+          "GET", "/v1/folders", {
+            params: { workspaceId: data.projectId, environment: data.environmentSlug, path: data.path, recursive: String(data.recursive) },
+          }, signal,
+        );
+        return textResult(JSON.stringify({ folders: response.folders.map(({ id, name, parentId }) => ({ id, name, parentId })) }));
       }
 
       if (name === AvailableTools.InviteMembersToProject) {

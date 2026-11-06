@@ -69,11 +69,12 @@ Add the following to your `claude_desktop_config.json`. See [here](https://model
 | `create-secret`             | Create a new secret                     | No        |
 | `delete-secret`             | Delete a secret                         | No        |
 | `update-secret`             | Update a secret                         | No        |
-| `list-secrets`              | Lists all secrets                       | Yes       |
+| `list-secrets`              | Lists all secrets (optionally recursive) | Yes       |
 | `get-secret`                | Get a single secret                     | Yes       |
 | `create-project`            | Create a new project                    | No        |
 | `create-environment`        | Create a new environment                | No        |
 | `create-folder`             | Create a new folder                     | No        |
+| `list-folders`              | List folders (optionally recursive)      | Yes       |
 | `invite-members-to-project` | Invite one or more members to a project | No        |
 | `list-projects`             | List all projects                       | Yes       |
 
