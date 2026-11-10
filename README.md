@@ -117,6 +117,7 @@ The server writes one JSON object per line to stderr: a `server_started` entry w
 - `actor`: the authentication method and, for universal auth, the machine identity's client ID.
 - `client`: the name and version the MCP client reported when it connected.
 - `arguments`: identifiers only, such as project ID, environment, path, secret name, and the members and roles of an invite.
+- `resolved`: the project ID and environment slug the call was sent to, when the server looked them up from a project name or environment name in `arguments`.
 - `error`: the error message, when the call failed.
 
 Secret values, the client secret and access tokens are never written. Set `INFISICAL_AUDIT_LOG=false` to turn off the `tool_call` entries.

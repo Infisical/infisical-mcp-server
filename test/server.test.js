@@ -1586,6 +1586,43 @@ describe("guiding models", () => {
     );
   });
 
+  test("finds a project whose name has a period, and audits the project the call went to", async (t) => {
+    const { call, logs } = await setup(t, {
+      respond: (request) =>
+        request.path === "/api/v1/workspace"
+          ? [200, { workspaces: [{ id: "project-1", name: "Acme.com", slug: "acme", type: "secret-manager", environments: [{ id: "env-1", name: "Development", slug: "dev" }] }] }]
+          : onlyById(request),
+    });
+
+    await call("get-secret", { projectId: "Acme.com", environmentSlug: "Development", secretName: "DB_PASSWORD" });
+
+    assert.deepEqual(logs[0].arguments, { projectId: "Acme.com", environmentSlug: "Development", secretName: "DB_PASSWORD" });
+    assert.deepEqual(logs[0].resolved, { projectId: "project-1", environment: "dev" });
+  });
+
+  test("logs in again when the token is rejected while looking a project up", async (t) => {
+    const issued = [];
+    const { call, logins } = await setup(t, {
+      respond: (request) => {
+        if (request.path === LOGIN_PATH) {
+          const token = `${accessToken(3600)}.${issued.length}`;
+          issued.push(token);
+          return [200, { accessToken: token, expiresIn: 3600 }];
+        }
+        if (request.path === "/api/v1/workspace" && request.authorization === `Bearer ${issued[0]}`) {
+          return [401, { message: "Failed to authorize: token usage limit reached" }];
+        }
+        return onlyById(request);
+      },
+    });
+
+    await call("list-secrets", SECRET_LOCATION);
+    const text = await call("get-secret", { projectId: "payments", environmentSlug: "dev", secretName: "DB_PASSWORD" });
+
+    assert.equal(parseResponse(text).secretKey, "DB_PASSWORD");
+    assert.equal(logins().length, 2);
+  });
+
   test("does not look the project up when only a folder is missing", async (t) => {
     const { callError, secretRequests } = await setup(t, {
       respond: ({ path }) =>

@@ -270,6 +270,10 @@ type ToolResult = ReturnType<typeof textResult>;
 // the client never sees it
 const PENDING_APPROVAL = Symbol("pendingApproval");
 
+// the project and environment a call was sent to, when they were looked up
+// from what the model passed, so the audit log names the actual target
+const RESOLVED_LOCATION = Symbol("resolvedLocation");
+
 const pendingApproval = ({ id, slug, status }: ChangeRequest) => ({
   [PENDING_APPROVAL]: true,
   ...textResult(
@@ -382,11 +386,11 @@ class LocationNotFoundError extends Error {}
 
 // how Infisical answers a project or environment it does not have, which
 // on a secret read reads "Folder with path '/' in environment 'x' was not
-// found"
+// found". the name it repeats can hold any character, a period included
 const isLocationNotFound = (err: unknown) =>
   err instanceof ApiRequestError &&
   err.status === 404 &&
-  /\b(project|environment)\b[^.]*\bnot found\b/i.test(err.apiMessage ?? "");
+  /\b(project|environment)\b.*?\bnot found\b/i.test(err.apiMessage ?? "");
 
 const MAX_PROJECTS_IN_ERROR = 25;
 
@@ -1440,8 +1444,14 @@ export const createServer = (
       try {
         resolved = await resolveLocation(location, signal);
       } catch (lookupErr) {
-        // when the projects cannot be listed, Infisical's own answer says more
-        if (lookupErr instanceof LocationNotFoundError) throw lookupErr;
+        // a rejected token has to reach the login retry. otherwise, when the
+        // projects cannot be listed, Infisical's own answer says more
+        if (
+          lookupErr instanceof LocationNotFoundError ||
+          isUnauthorized(lookupErr)
+        ) {
+          throw lookupErr;
+        }
         throw err;
       }
 
@@ -1465,6 +1475,7 @@ export const createServer = (
 
       return {
         ...result,
+        [RESOLVED_LOCATION]: resolved,
         content: [
           ...result.content,
           {
@@ -1907,6 +1918,7 @@ export const createServer = (
     const audit = (
       outcome: "success" | "pending_approval" | "denied" | "error",
       error?: string,
+      resolved?: Location,
     ) => {
       if (!env.INFISICAL_AUDIT_LOG) return;
 
@@ -1928,13 +1940,18 @@ export const createServer = (
         actor,
         client: client && { name: client.name, version: client.version },
         arguments: auditedArguments(args),
+        ...(resolved && { resolved }),
         ...(error && { error }),
       });
     };
 
     try {
       const result = await callToolWithRelogin(req, extra.signal);
-      audit(PENDING_APPROVAL in result ? "pending_approval" : "success");
+      audit(
+        PENDING_APPROVAL in result ? "pending_approval" : "success",
+        undefined,
+        (result as { [RESOLVED_LOCATION]?: Location })[RESOLVED_LOCATION],
+      );
       return result;
     } catch (err) {
       const message = (err as Error).message;
