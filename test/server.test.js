@@ -259,7 +259,7 @@ describe("configuration", () => {
   // the hardening controls are opt-in, so an existing setup keeps working
   test("defaults to every tool, unmasked values and an audit log", () => {
     const env = parse({});
-    assert.equal(env.INFISICAL_ENABLED_TOOLS.length, 10);
+    assert.equal(env.INFISICAL_ENABLED_TOOLS.length, 11);
     assert.equal(env.INFISICAL_MASK_SECRET_VALUES, false);
     assert.equal(env.INFISICAL_AUDIT_LOG, true);
   });
@@ -284,15 +284,15 @@ describe("configuration", () => {
   });
 
   test("exposes every tool for all", () => {
-    assert.equal(parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length, 10);
+    assert.equal(parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length, 11);
   });
 
   test("gives each parse its own tool list", () => {
     parse({}).INFISICAL_ENABLED_TOOLS.length = 0;
     parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length = 0;
 
-    assert.equal(parse({}).INFISICAL_ENABLED_TOOLS.length, 10);
-    assert.equal(parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length, 10);
+    assert.equal(parse({}).INFISICAL_ENABLED_TOOLS.length, 11);
+    assert.equal(parse(ALL_TOOLS).INFISICAL_ENABLED_TOOLS.length, 11);
   });
 
   for (const [description, env, message] of [
@@ -328,7 +328,7 @@ describe("tool gating", () => {
     const { client } = await setup(t);
 
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 10);
+    assert.equal(tools.length, 11);
   });
 
   test("lists only tools that read under the read-only allowlist", async (t) => {
@@ -1487,6 +1487,288 @@ describe("the stdio server", () => {
     await request(2, "tools/call", { name: "list-secrets", arguments: SECRET_LOCATION });
     const { result } = await request(3, "tools/list");
 
-    assert.equal(result.tools.length, 10);
+    assert.equal(result.tools.length, 11);
+  });
+});
+
+describe("guiding models", () => {
+  // a project the fake API only knows by ID, as Infisical's secret routes do
+  const onlyById = (request) => {
+    const projectId = request.query.projectId ?? request.body?.projectId ?? request.body?.workspaceId;
+    if (projectId !== undefined && projectId !== "project-1") {
+      return [404, { message: `Project with ID '${projectId}' not found during bot lookup. Are you sure you are using the correct project ID?` }];
+    }
+    const environment = request.query.environment ?? request.body?.environment;
+    if (environment !== undefined && environment !== "dev") {
+      return [404, { message: `Environment with slug '${environment}' not found in project with ID project-1` }];
+    }
+    return undefined;
+  };
+
+  test("declares an item type for every array parameter", async (t) => {
+    const { client } = await setup(t);
+
+    const { tools } = await client.listTools();
+    for (const tool of tools) {
+      for (const [name, property] of Object.entries(tool.inputSchema.properties ?? {})) {
+        if (property.type === "array") {
+          assert.ok(property.items, `${tool.name}.${name} has no items`);
+        }
+      }
+    }
+  });
+
+  test("tells the client how the tools fit together", async (t) => {
+    const { client } = await setup(t);
+
+    assert.match(client.getInstructions(), /list-projects first/);
+  });
+
+  test("finds a project by name and an environment by name, and says which it used", async (t) => {
+    const { client, secretRequests } = await setup(t, { respond: onlyById });
+
+    const result = await client.callTool({
+      name: "get-secret",
+      arguments: { projectId: "payments", environmentSlug: "Development", secretName: "DB_PASSWORD" },
+    });
+
+    assert.ok(!result.isError, result.content[0].text);
+    assert.equal(parseResponse(result.content[0].text).secretKey, "DB_PASSWORD");
+    assert.match(result.content[1].text, /projectId "project-1" for "payments" and environmentSlug "dev" for "Development"/);
+    const [first, lookup, retried] = secretRequests();
+    assert.equal(first.query.projectId, "payments");
+    assert.equal(lookup.path, "/api/v1/workspace");
+    assert.equal(retried.query.projectId, "project-1");
+    assert.equal(retried.query.environment, "dev");
+  });
+
+  test("repeats a write that Infisical refused for naming an unknown project", async (t) => {
+    const { call, secretRequests } = await setup(t, { env: ALL_TOOLS, respond: onlyById });
+
+    await call("create-secret", { projectId: "Payments", environmentSlug: "dev", secretName: "NEW_KEY", secretValue: SECRET_VALUE });
+
+    const writes = secretRequests().filter((request) => request.method === "POST");
+    assert.deepEqual(writes.map((request) => request.body.projectId), ["Payments", "project-1"]);
+  });
+
+  test("lists the projects it can access when none matches", async (t) => {
+    const { callError, secretRequests } = await setup(t, { env: ALL_TOOLS, respond: onlyById });
+
+    const text = await callError("create-folder", { projectId: "billing", environmentSlug: "dev", name: "backend" });
+
+    assert.match(text, /No project has the ID, slug or name "billing"/);
+    assert.match(text, /"Payments" \(ID project-1, slug payments\)/);
+    assert.equal(secretRequests().filter((request) => request.method === "POST").length, 1);
+  });
+
+  test("lists a project's environments when none matches", async (t) => {
+    const { callError } = await setup(t, { respond: onlyById });
+
+    const text = await callError("list-secrets", { projectId: "project-1", environmentSlug: "production" });
+
+    assert.match(text, /has no environment "production"\. Its environments are dev \(Development\)/);
+  });
+
+  test("asks for the ID when several projects share a name", async (t) => {
+    const { callError } = await setup(t, {
+      respond: (request) => {
+        if (request.path === "/api/v1/workspace") {
+          const project = { name: "Payments", type: "secret-manager", environments: [] };
+          return [200, { workspaces: [{ ...project, id: "a", slug: "payments-a" }, { ...project, id: "b", slug: "payments-b" }] }];
+        }
+        return onlyById(request);
+      },
+    });
+
+    assert.match(
+      await callError("list-secrets", { projectId: "payments", environmentSlug: "dev" }),
+      /Several projects are named "payments": "Payments" \(ID a, slug payments-a\), "Payments" \(ID b, slug payments-b\)/,
+    );
+  });
+
+  test("finds a project whose name has a period, and audits the project the call went to", async (t) => {
+    const { call, logs } = await setup(t, {
+      respond: (request) =>
+        request.path === "/api/v1/workspace"
+          ? [200, { workspaces: [{ id: "project-1", name: "Acme.com", slug: "acme", type: "secret-manager", environments: [{ id: "env-1", name: "Development", slug: "dev" }] }] }]
+          : onlyById(request),
+    });
+
+    await call("get-secret", { projectId: "Acme.com", environmentSlug: "Development", secretName: "DB_PASSWORD" });
+
+    assert.deepEqual(logs[0].arguments, { projectId: "Acme.com", environmentSlug: "Development", secretName: "DB_PASSWORD" });
+    assert.deepEqual(logs[0].resolved, { projectId: "project-1", environment: "dev" });
+  });
+
+  test("logs in again when the token is rejected while looking a project up", async (t) => {
+    const issued = [];
+    const { call, logins } = await setup(t, {
+      respond: (request) => {
+        if (request.path === LOGIN_PATH) {
+          const token = `${accessToken(3600)}.${issued.length}`;
+          issued.push(token);
+          return [200, { accessToken: token, expiresIn: 3600 }];
+        }
+        if (request.path === "/api/v1/workspace" && request.authorization === `Bearer ${issued[0]}`) {
+          return [401, { message: "Failed to authorize: token usage limit reached" }];
+        }
+        return onlyById(request);
+      },
+    });
+
+    await call("list-secrets", SECRET_LOCATION);
+    const text = await call("get-secret", { projectId: "payments", environmentSlug: "dev", secretName: "DB_PASSWORD" });
+
+    assert.equal(parseResponse(text).secretKey, "DB_PASSWORD");
+    assert.equal(logins().length, 2);
+  });
+
+  test("does not look the project up when only a folder is missing", async (t) => {
+    const { callError, secretRequests } = await setup(t, {
+      respond: ({ path }) =>
+        path === "/api/v4/secrets"
+          ? [404, { message: "Folder with path '/backend' in environment 'dev' was not found. Please ensure the environment slug and secret path is correct." }]
+          : undefined,
+    });
+
+    const text = await callError("list-secrets", { ...SECRET_LOCATION, secretPath: "/backend" });
+
+    assert.match(text, /Folder with path '\/backend'.*Call list-folders/);
+    assert.deepEqual(secretRequests().map((request) => request.path), ["/api/v4/secrets", "/api/v1/workspace"]);
+  });
+
+  test("says which secret was missing", async (t) => {
+    const { callError } = await setup(t, {
+      env: ALL_TOOLS,
+      respond: ({ method }) => (method === "DELETE" ? [404, { message: "Secret not found" }] : undefined),
+    });
+
+    assert.match(
+      await callError("delete-secret", { ...SECRET_LOCATION, secretName: "OLD_TOKEN" }),
+      /404: Secret not found\. There is no secret "OLD_TOKEN" in folder "\/" of environment "dev"/,
+    );
+  });
+
+  test("lists the secrets in every folder with recursive", async (t) => {
+    const { call, secretRequests } = await setup(t, {
+      respond: ({ path, query }) =>
+        path === "/api/v4/secrets" && query.recursive === "true"
+          ? [200, { secrets: [{ secretKey: "REDIS_URL", secretValue: SECRET_VALUE, secretPath: "/backend" }] }]
+          : undefined,
+    });
+
+    const response = JSON.parse(await call("list-secrets", { ...SECRET_LOCATION, recursive: true }));
+    const plain = JSON.parse(await call("list-secrets", SECRET_LOCATION));
+
+    assert.deepEqual(response.secrets, [{ secretKey: "REDIS_URL", secretValue: SECRET_VALUE, secretPath: "/backend" }]);
+    assert.ok(!("secretPath" in plain.secrets[0]));
+    assert.equal(secretRequests()[1].query.recursive, "false");
+  });
+
+  test("list-folders gives each folder the full path secretPath takes", async (t) => {
+    const { call, secretRequests } = await setup(t, {
+      respond: ({ path, query }) =>
+        path === "/api/v1/folders"
+          ? [200, { folders: query.recursive === "true"
+              ? [{ name: "workers", relativePath: "/workers" }, { name: "jobs", relativePath: "/workers/jobs" }]
+              : [{ name: "workers" }] }]
+          : undefined,
+    });
+
+    const nested = JSON.parse(await call("list-folders", { ...SECRET_LOCATION, path: "/backend/", recursive: true }));
+    const direct = JSON.parse(await call("list-folders", { ...SECRET_LOCATION, path: "backend" }));
+
+    assert.deepEqual(nested.folders.map((folder) => folder.path), ["/backend/workers", "/backend/workers/jobs"]);
+    assert.deepEqual(direct.folders, [{ name: "workers", path: "/backend/workers" }]);
+    const [request] = secretRequests();
+    assert.equal(request.query.workspaceId, "project-1");
+    assert.equal(request.query.environment, "dev");
+    assert.equal(request.query.path, "/backend");
+  });
+
+  test("create-project makes a secrets project unless told otherwise, and answers with its ID and environments", async (t) => {
+    const { call, secretRequests } = await setup(t, {
+      env: ALL_TOOLS,
+      respond: ({ method, path, body }) =>
+        method === "POST" && path === "/api/v2/workspace"
+          ? [200, { project: { id: "project-2", name: body.projectName, slug: "billing-x1", type: body.type, orgId: "org-1", kmsSecretManagerKeyId: null, environments: [{ id: "env-1", name: "Development", slug: "dev" }] } }]
+          : undefined,
+    });
+
+    const project = parseResponse(await call("create-project", { projectName: "Billing" }));
+
+    assert.equal(secretRequests()[0].body.type, "secret-manager");
+    assert.equal(project.id, "project-2");
+    assert.deepEqual(project.environments, [{ name: "Development", slug: "dev", id: "env-1" }]);
+    assert.ok(!("kmsSecretManagerKeyId" in project));
+  });
+
+  test("create-project does not offer PAM, which Infisical creates by itself", async (t) => {
+    const { client, callError } = await setup(t, { env: ALL_TOOLS });
+
+    const { tools } = await client.listTools();
+    const createProject = tools.find((tool) => tool.name === "create-project");
+    assert.ok(!createProject.inputSchema.properties.type.enum.includes("pam"));
+    assert.match(await callError("create-project", { projectName: "Access", type: "pam" }), /Invalid arguments: type/);
+  });
+
+  test("create-folder takes environmentSlug like the other tools", async (t) => {
+    const { call, callError, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    await call("create-folder", { projectId: "project-1", environmentSlug: "dev", name: "backend" });
+
+    assert.equal(secretRequests()[0].body.environment, "dev");
+    assert.match(
+      await callError("create-folder", { projectId: "project-1", name: "backend" }),
+      /Invalid arguments: environmentSlug/,
+    );
+  });
+
+  test("invite-members-to-project says when nobody was added", async (t) => {
+    const { call } = await setup(t, {
+      env: ALL_TOOLS,
+      respond: ({ path }) => (path.endsWith("/memberships") ? [200, { memberships: [] }] : undefined),
+    });
+
+    assert.match(
+      await call("invite-members-to-project", { projectId: "project-1", emails: ["dev@example.com"] }),
+      /added no new members/,
+    );
+  });
+
+  test("shows a validation failure as field and reason", async (t) => {
+    const { callError } = await setup(t, {
+      env: ALL_TOOLS,
+      respond: ({ path }) =>
+        path === "/api/v2/workspace"
+          ? [422, { message: [{ code: "custom", message: "Slug field can only contain lowercase letters, numbers, and hyphens", path: ["slug"] }] }]
+          : undefined,
+    });
+
+    assert.equal(
+      await callError("create-project", { projectName: "Billing", slug: "Billing API" }),
+      "Infisical API returned 422: slug: Slug field can only contain lowercase letters, numbers, and hyphens",
+    );
+  });
+
+  test("list-projects narrows the list by name or slug", async (t) => {
+    const { call } = await setup(t);
+
+    const parse = (text) => JSON.parse(text.slice(text.indexOf("[")));
+    assert.deepEqual(parse(await call("list-projects", { search: "PAY" })).map((project) => project.id), ["project-1"]);
+    assert.deepEqual(parse(await call("list-projects", { search: "billing" })), []);
+  });
+
+  test("takes booleans and numbers sent as strings", async (t) => {
+    const { call, callError, secretRequests } = await setup(t, { env: ALL_TOOLS });
+
+    await call("list-secrets", { ...SECRET_LOCATION, recursive: "true", includeImports: "false" });
+    await call("create-environment", { projectId: "project-1", name: "QA", slug: "qa", position: "2" });
+
+    const [list, environment] = secretRequests();
+    assert.equal(list.query.recursive, "true");
+    assert.equal(list.query.includeImports, "false");
+    assert.equal(environment.body.position, 2);
+    assert.match(await callError("list-secrets", { ...SECRET_LOCATION, recursive: "yes" }), /Invalid arguments: recursive/);
   });
 });

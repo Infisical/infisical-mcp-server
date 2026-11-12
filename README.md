@@ -74,14 +74,17 @@ Add the following to your `claude_desktop_config.json`. See [here](https://model
 | `create-project`            | Create a new project                    | No        |
 | `create-environment`        | Create a new environment                | No        |
 | `create-folder`             | Create a new folder                     | No        |
+| `list-folders`              | List the folders in an environment      | Yes       |
 | `invite-members-to-project` | Invite one or more members to a project | No        |
 | `list-projects`             | List all projects                       | Yes       |
+
+Tools that take a `projectId` also accept the project's slug or exact name, and tools that take an environment slug also accept the environment's name, such as `Production` for `prod`. The server looks these up only when Infisical reports that the project or environment does not exist, so a call that passes the ID and slug sends no extra request. When it resolves a name, the response notes the ID and slug it used. `list-secrets` takes `recursive` to include the secrets in every folder below `secretPath`, and `list-projects` takes `search` to list only the projects whose name or slug contains it.
 
 ## Limiting what the server exposes
 
 Two optional variables restrict the server. Both default to the behaviour of earlier versions, so existing setups keep working. We recommend setting both wherever the model does not need to change anything or read secret values.
 
-- `INFISICAL_ENABLED_TOOLS`: a comma-separated allowlist of tools to expose, using the tool names from the table above. Omit it, or set it to `all`, to expose every tool. For a read-only server, list the read-only tools: `list-projects,list-secrets,get-secret`. Tools left out are hidden from `tools/list` and refused if called. An unknown name fails at startup, and so does an empty value.
+- `INFISICAL_ENABLED_TOOLS`: a comma-separated allowlist of tools to expose, using the tool names from the table above. Omit it, or set it to `all`, to expose every tool. For a read-only server, list the read-only tools: `list-projects,list-secrets,get-secret,list-folders`. Tools left out are hidden from `tools/list` and refused if called. An unknown name fails at startup, and so does an empty value.
 - `INFISICAL_MASK_SECRET_VALUES`: `true` or `false`, case-insensitive. Defaults to `false`. When `true`, secret values in tool responses are replaced with `<masked>`, and `list-secrets` and `get-secret` ask Infisical not to send the values at all, so on Infisical Cloud and self-hosted v0.116.0 or later they never reach the server or the model. Secret names, paths, and other metadata are still returned.
 
 A hardened configuration sets both:
@@ -90,7 +93,7 @@ A hardened configuration sets both:
 "env": {
   "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID": "<machine-identity-universal-auth-client-id>",
   "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET": "<machine-identity-universal-auth-client-secret>",
-  "INFISICAL_ENABLED_TOOLS": "list-projects,list-secrets,get-secret",
+  "INFISICAL_ENABLED_TOOLS": "list-projects,list-secrets,get-secret,list-folders",
   "INFISICAL_MASK_SECRET_VALUES": "true"
 }
 ```
@@ -102,6 +105,8 @@ Scope the machine identity to only the projects and environments the server need
 Existing configurations keep working. Two things behave differently from earlier versions:
 
 - A tool that fails while running, for example because Infisical refused the request, returns a result with `isError` set and the reason as its text, instead of a JSON-RPC error. Calling an unknown or disabled tool is still a JSON-RPC error.
+- `create-project` creates a `secret-manager` project when no `type` is given, and no longer offers `pam`, which Infisical creates for each organization by itself.
+- `create-folder` takes the environment as `environmentSlug`, like the other tools. `environment` still works.
 - The secret tools use Infisical's v4 secrets API. A self-hosted version before v0.150.0 has none, and on one the server switches to the deprecated v3 routes by itself.
 
 ## Audit log
@@ -112,6 +117,7 @@ The server writes one JSON object per line to stderr: a `server_started` entry w
 - `actor`: the authentication method and, for universal auth, the machine identity's client ID.
 - `client`: the name and version the MCP client reported when it connected.
 - `arguments`: identifiers only, such as project ID, environment, path, secret name, and the members and roles of an invite.
+- `resolved`: the project ID and environment slug the call was sent to, when the server looked them up from a project name or environment name in `arguments`.
 - `error`: the error message, when the call failed.
 
 Secret values, the client secret and access tokens are never written. Set `INFISICAL_AUDIT_LOG=false` to turn off the `tool_call` entries.
@@ -124,18 +130,18 @@ Infisical's own audit log records every secret operation as well, with the machi
 
 The server talks to its MCP client over stdio and opens no ports. Its only outbound traffic is HTTPS to `INFISICAL_HOST_URL`, and it sends no telemetry. Requests follow the standard `HTTPS_PROXY` and `NO_PROXY` variables if they are set. The endpoints it calls are:
 
-| Endpoint                                              | Used by                                                         |
-| ----------------------------------------------------- | --------------------------------------------------------------- |
-| `POST /api/v1/auth/universal-auth/login`              | Universal auth login                                            |
-| `POST /api/v1/auth/token/renew`                       | Universal auth token renewal                                    |
-| `GET /api/v4/secrets`                                 | `list-secrets`                                                  |
-| `GET, POST, PATCH, DELETE /api/v4/secrets/{name}`     | `get-secret`, `create-secret`, `update-secret`, `delete-secret` |
-| `/api/v3/secrets/raw`, `/api/v3/secrets/raw/{name}`   | The same tools, on self-hosted versions before v0.150.0         |
-| `GET /api/v1/workspace`                               | `list-projects`                                                 |
-| `POST /api/v2/workspace`                              | `create-project`                                                |
-| `POST /api/v1/workspace/{projectId}/environments`     | `create-environment`                                            |
-| `POST /api/v1/folders`                                | `create-folder`                                                 |
-| `POST /api/v2/workspace/{projectId}/memberships`      | `invite-members-to-project`                                     |
+| Endpoint                                            | Used by                                                         |
+| --------------------------------------------------- | --------------------------------------------------------------- |
+| `POST /api/v1/auth/universal-auth/login`            | Universal auth login                                            |
+| `POST /api/v1/auth/token/renew`                     | Universal auth token renewal                                    |
+| `GET /api/v4/secrets`                               | `list-secrets`                                                  |
+| `GET, POST, PATCH, DELETE /api/v4/secrets/{name}`   | `get-secret`, `create-secret`, `update-secret`, `delete-secret` |
+| `/api/v3/secrets/raw`, `/api/v3/secrets/raw/{name}` | The same tools, on self-hosted versions before v0.150.0         |
+| `GET /api/v1/workspace`                             | `list-projects`, and resolving a project or environment by name |
+| `POST /api/v2/workspace`                            | `create-project`                                                |
+| `POST /api/v1/workspace/{projectId}/environments`   | `create-environment`                                            |
+| `GET, POST /api/v1/folders`                         | `list-folders`, `create-folder`                                 |
+| `POST /api/v2/workspace/{projectId}/memberships`    | `invite-members-to-project`                                     |
 
 Launching through `npx` also contacts the npm registry to fetch the package. To avoid that at runtime, install a pinned version ahead of time and point the client at it.
 
